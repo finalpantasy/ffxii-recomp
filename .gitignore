@@ -1,0 +1,13 @@
+build/
+generated/
+extracted/
+mods/
+__pycache__/
+analysis/ghidra/
+*.vbf
+*.exe
+*.dll
+*.pdb
+*.ilk
+*.dmp
+*.keys

@@ -1,0 +1,780 @@
+{
+  "total": 691,
+  "origins": {
+    "discovered-only": {
+      "total": 691,
+      "mnemonics": {
+        "cli": 17,
+        "cvtpi2ps": 8,
+        "cvttps2pi": 9,
+        "enter": 84,
+        "fbstp": 3,
+        "in": 41,
+        "insb": 22,
+        "insd": 8,
+        "iretd": 38,
+        "iretq": 1,
+        "out": 42,
+        "outsb": 15,
+        "outsd": 11,
+        "sldt": 2,
+        "sti": 6,
+        "undecodable": 384
+      }
+    }
+  },
+  "examples": {
+    "discovered-only:cli": [
+      {
+        "function": 3437167,
+        "address": 3437167,
+        "file": "gen_041.cpp"
+      },
+      {
+        "function": 4677497,
+        "address": 4677497,
+        "file": "gen_066.cpp"
+      },
+      {
+        "function": 4987957,
+        "address": 4987957,
+        "file": "gen_184.cpp"
+      },
+      {
+        "function": 5544076,
+        "address": 5544076,
+        "file": "gen_250.cpp"
+      },
+      {
+        "function": 5637333,
+        "address": 5637336,
+        "file": "gen_253.cpp"
+      },
+      {
+        "function": 5668882,
+        "address": 5668885,
+        "file": "gen_254.cpp"
+      },
+      {
+        "function": 5917509,
+        "address": 5917509,
+        "file": "gen_261.cpp"
+      },
+      {
+        "function": 5918005,
+        "address": 5918005,
+        "file": "gen_261.cpp"
+      },
+      {
+        "function": 6237890,
+        "address": 6237896,
+        "file": "gen_269.cpp"
+      },
+      {
+        "function": 6801941,
+        "address": 6801941,
+        "file": "gen_281.cpp"
+      },
+      {
+        "function": 7439100,
+        "address": 7439100,
+        "file": "gen_296.cpp"
+      },
+      {
+        "function": 7629175,
+        "address": 7629183,
+        "file": "gen_302.cpp"
+      }
+    ],
+    "discovered-only:cvtpi2ps": [
+      {
+        "function": 4907109,
+        "address": 4907114,
+        "file": "gen_108.cpp"
+      },
+      {
+        "function": 7650288,
+        "address": 7650292,
+        "file": "gen_305.cpp"
+      },
+      {
+        "function": 7654939,
+        "address": 7654945,
+        "file": "gen_305.cpp"
+      },
+      {
+        "function": 7686309,
+        "address": 7686317,
+        "file": "gen_306.cpp"
+      },
+      {
+        "function": 7832956,
+        "address": 7832958,
+        "file": "gen_312.cpp"
+      },
+      {
+        "function": 7835626,
+        "address": 7835626,
+        "file": "gen_313.cpp"
+      },
+      {
+        "function": 7844000,
+        "address": 7844000,
+        "file": "gen_318.cpp"
+      },
+      {
+        "function": 7848752,
+        "address": 7848760,
+        "file": "gen_322.cpp"
+      }
+    ],
+    "discovered-only:cvttps2pi": [
+      {
+        "function": 4728587,
+        "address": 4728604,
+        "file": "gen_072.cpp"
+      },
+      {
+        "function": 4914677,
+        "address": 4914683,
+        "file": "gen_112.cpp"
+      },
+      {
+        "function": 4987285,
+        "address": 4987285,
+        "file": "gen_184.cpp"
+      },
+      {
+        "function": 5034512,
+        "address": 5034514,
+        "file": "gen_193.cpp"
+      },
+      {
+        "function": 7239397,
+        "address": 7239400,
+        "file": "gen_292.cpp"
+      },
+      {
+        "function": 7472169,
+        "address": 7472174,
+        "file": "gen_297.cpp"
+      },
+      {
+        "function": 7812139,
+        "address": 7812142,
+        "file": "gen_309.cpp"
+      },
+      {
+        "function": 7841616,
+        "address": 7841619,
+        "file": "gen_313.cpp"
+      },
+      {
+        "function": 7863349,
+        "address": 7863349,
+        "file": "gen_328.cpp"
+      }
+    ],
+    "discovered-only:enter": [
+      {
+        "function": 2564212,
+        "address": 2564224,
+        "file": "gen_024.cpp"
+      },
+      {
+        "function": 2564212,
+        "address": 2564231,
+        "file": "gen_024.cpp"
+      },
+      {
+        "function": 3223856,
+        "address": 3223860,
+        "file": "gen_037.cpp"
+      },
+      {
+        "function": 3670016,
+        "address": 3670023,
+        "file": "gen_046.cpp"
+      },
+      {
+        "function": 4642885,
+        "address": 4642886,
+        "file": "gen_065.cpp"
+      },
+      {
+        "function": 4645957,
+        "address": 4645957,
+        "file": "gen_065.cpp"
+      },
+      {
+        "function": 4719893,
+        "address": 4719893,
+        "file": "gen_069.cpp"
+      },
+      {
+        "function": 4738869,
+        "address": 4738869,
+        "file": "gen_080.cpp"
+      },
+      {
+        "function": 4754694,
+        "address": 4754694,
+        "file": "gen_084.cpp"
+      },
+      {
+        "function": 4755206,
+        "address": 4755208,
+        "file": "gen_085.cpp"
+      },
+      {
+        "function": 4755872,
+        "address": 4755876,
+        "file": "gen_085.cpp"
+      },
+      {
+        "function": 4764187,
+        "address": 4764193,
+        "file": "gen_089.cpp"
+      }
+    ],
+    "discovered-only:fbstp": [
+      {
+        "function": 5205121,
+        "address": 5205121,
+        "file": "gen_222.cpp"
+      },
+      {
+        "function": 7854160,
+        "address": 7854160,
+        "file": "gen_327.cpp"
+      },
+      {
+        "function": 7893005,
+        "address": 7893005,
+        "file": "gen_330.cpp"
+      }
+    ],
+    "discovered-only:in": [
+      {
+        "function": 2807729,
+        "address": 2807729,
+        "file": "gen_029.cpp"
+      },
+      {
+        "function": 4390912,
+        "address": 4390912,
+        "file": "gen_060.cpp"
+      },
+      {
+        "function": 4606965,
+        "address": 4606968,
+        "file": "gen_064.cpp"
+      },
+      {
+        "function": 4608709,
+        "address": 4608709,
+        "file": "gen_064.cpp"
+      },
+      {
+        "function": 4609861,
+        "address": 4609864,
+        "file": "gen_064.cpp"
+      },
+      {
+        "function": 4646725,
+        "address": 4646725,
+        "file": "gen_065.cpp"
+      },
+      {
+        "function": 4762747,
+        "address": 4762754,
+        "file": "gen_088.cpp"
+      },
+      {
+        "function": 4862562,
+        "address": 4862562,
+        "file": "gen_105.cpp"
+      },
+      {
+        "function": 4985653,
+        "address": 4985653,
+        "file": "gen_183.cpp"
+      },
+      {
+        "function": 5036268,
+        "address": 5036272,
+        "file": "gen_193.cpp"
+      },
+      {
+        "function": 5115284,
+        "address": 5115289,
+        "file": "gen_197.cpp"
+      },
+      {
+        "function": 5203539,
+        "address": 5203539,
+        "file": "gen_222.cpp"
+      }
+    ],
+    "discovered-only:insb": [
+      {
+        "function": 3109733,
+        "address": 3109741,
+        "file": "gen_034.cpp"
+      },
+      {
+        "function": 3305569,
+        "address": 3305569,
+        "file": "gen_038.cpp"
+      },
+      {
+        "function": 3342436,
+        "address": 3342439,
+        "file": "gen_039.cpp"
+      },
+      {
+        "function": 4953814,
+        "address": 4953856,
+        "file": "gen_171.cpp"
+      },
+      {
+        "function": 4989973,
+        "address": 4989977,
+        "file": "gen_185.cpp"
+      },
+      {
+        "function": 5018968,
+        "address": 5018968,
+        "file": "gen_190.cpp"
+      },
+      {
+        "function": 5570560,
+        "address": 5570560,
+        "file": "gen_251.cpp"
+      },
+      {
+        "function": 5594646,
+        "address": 5594646,
+        "file": "gen_252.cpp"
+      },
+      {
+        "function": 5875172,
+        "address": 5875172,
+        "file": "gen_259.cpp"
+      },
+      {
+        "function": 6239123,
+        "address": 6239123,
+        "file": "gen_269.cpp"
+      },
+      {
+        "function": 6512485,
+        "address": 6512485,
+        "file": "gen_275.cpp"
+      },
+      {
+        "function": 6757318,
+        "address": 6757318,
+        "file": "gen_280.cpp"
+      }
+    ],
+    "discovered-only:insd": [
+      {
+        "function": 5197472,
+        "address": 5197472,
+        "file": "gen_221.cpp"
+      },
+      {
+        "function": 6648437,
+        "address": 6648437,
+        "file": "gen_278.cpp"
+      },
+      {
+        "function": 6648673,
+        "address": 6648673,
+        "file": "gen_278.cpp"
+      },
+      {
+        "function": 6694738,
+        "address": 6694825,
+        "file": "gen_279.cpp"
+      },
+      {
+        "function": 6707241,
+        "address": 6707241,
+        "file": "gen_279.cpp"
+      },
+      {
+        "function": 6714637,
+        "address": 6714637,
+        "file": "gen_279.cpp"
+      },
+      {
+        "function": 6716393,
+        "address": 6716394,
+        "file": "gen_279.cpp"
+      },
+      {
+        "function": 7824895,
+        "address": 7824895,
+        "file": "gen_310.cpp"
+      }
+    ],
+    "discovered-only:iretd": [
+      {
+        "function": 3866624,
+        "address": 3866624,
+        "file": "gen_049.cpp"
+      },
+      {
+        "function": 4661317,
+        "address": 4661318,
+        "file": "gen_066.cpp"
+      },
+      {
+        "function": 4736469,
+        "address": 4736469,
+        "file": "gen_079.cpp"
+      },
+      {
+        "function": 4771782,
+        "address": 4771782,
+        "file": "gen_096.cpp"
+      },
+      {
+        "function": 4794860,
+        "address": 4794860,
+        "file": "gen_101.cpp"
+      },
+      {
+        "function": 4946133,
+        "address": 4946134,
+        "file": "gen_161.cpp"
+      },
+      {
+        "function": 5016947,
+        "address": 5016948,
+        "file": "gen_189.cpp"
+      },
+      {
+        "function": 5182213,
+        "address": 5182214,
+        "file": "gen_204.cpp"
+      },
+      {
+        "function": 5380901,
+        "address": 5380901,
+        "file": "gen_238.cpp"
+      },
+      {
+        "function": 5533420,
+        "address": 5533427,
+        "file": "gen_249.cpp"
+      },
+      {
+        "function": 5588700,
+        "address": 5588706,
+        "file": "gen_251.cpp"
+      },
+      {
+        "function": 5690757,
+        "address": 5690760,
+        "file": "gen_254.cpp"
+      }
+    ],
+    "discovered-only:iretq": [
+      {
+        "function": 5571666,
+        "address": 5571666,
+        "file": "gen_251.cpp"
+      }
+    ],
+    "discovered-only:out": [
+      {
+        "function": 1245225,
+        "address": 1245225,
+        "file": "gen_000.cpp"
+      },
+      {
+        "function": 3223876,
+        "address": 3223876,
+        "file": "gen_037.cpp"
+      },
+      {
+        "function": 3670016,
+        "address": 3670018,
+        "file": "gen_046.cpp"
+      },
+      {
+        "function": 4622533,
+        "address": 4622538,
+        "file": "gen_065.cpp"
+      },
+      {
+        "function": 4631365,
+        "address": 4631365,
+        "file": "gen_065.cpp"
+      },
+      {
+        "function": 4633285,
+        "address": 4633285,
+        "file": "gen_065.cpp"
+      },
+      {
+        "function": 4645573,
+        "address": 4645574,
+        "file": "gen_065.cpp"
+      },
+      {
+        "function": 4659781,
+        "address": 4659781,
+        "file": "gen_066.cpp"
+      },
+      {
+        "function": 4732485,
+        "address": 4732485,
+        "file": "gen_075.cpp"
+      },
+      {
+        "function": 4738389,
+        "address": 4738393,
+        "file": "gen_080.cpp"
+      },
+      {
+        "function": 4744695,
+        "address": 4744695,
+        "file": "gen_082.cpp"
+      },
+      {
+        "function": 4753990,
+        "address": 4753990,
+        "file": "gen_084.cpp"
+      }
+    ],
+    "discovered-only:outsb": [
+      {
+        "function": 3109733,
+        "address": 3109733,
+        "file": "gen_034.cpp"
+      },
+      {
+        "function": 4618309,
+        "address": 4618309,
+        "file": "gen_065.cpp"
+      },
+      {
+        "function": 4764283,
+        "address": 4764283,
+        "file": "gen_089.cpp"
+      },
+      {
+        "function": 4774239,
+        "address": 4774239,
+        "file": "gen_096.cpp"
+      },
+      {
+        "function": 4972386,
+        "address": 4972386,
+        "file": "gen_179.cpp"
+      },
+      {
+        "function": 4987093,
+        "address": 4987093,
+        "file": "gen_184.cpp"
+      },
+      {
+        "function": 5383349,
+        "address": 5383349,
+        "file": "gen_238.cpp"
+      },
+      {
+        "function": 5513264,
+        "address": 5513264,
+        "file": "gen_247.cpp"
+      },
+      {
+        "function": 6279143,
+        "address": 6279143,
+        "file": "gen_270.cpp"
+      },
+      {
+        "function": 7651568,
+        "address": 7651568,
+        "file": "gen_305.cpp"
+      },
+      {
+        "function": 7852152,
+        "address": 7852164,
+        "file": "gen_326.cpp"
+      },
+      {
+        "function": 7853648,
+        "address": 7853648,
+        "file": "gen_327.cpp"
+      }
+    ],
+    "discovered-only:outsd": [
+      {
+        "function": 2555904,
+        "address": 2555904,
+        "file": "gen_024.cpp"
+      },
+      {
+        "function": 3109733,
+        "address": 3109753,
+        "file": "gen_034.cpp"
+      },
+      {
+        "function": 4740245,
+        "address": 4740356,
+        "file": "gen_081.cpp"
+      },
+      {
+        "function": 5028012,
+        "address": 5028012,
+        "file": "gen_192.cpp"
+      },
+      {
+        "function": 5493948,
+        "address": 5493986,
+        "file": "gen_244.cpp"
+      },
+      {
+        "function": 5920315,
+        "address": 5920317,
+        "file": "gen_261.cpp"
+      },
+      {
+        "function": 5963622,
+        "address": 5963622,
+        "file": "gen_263.cpp"
+      },
+      {
+        "function": 5993301,
+        "address": 5993308,
+        "file": "gen_264.cpp"
+      },
+      {
+        "function": 6001959,
+        "address": 6001959,
+        "file": "gen_264.cpp"
+      },
+      {
+        "function": 6023659,
+        "address": 6023659,
+        "file": "gen_265.cpp"
+      },
+      {
+        "function": 7629175,
+        "address": 7629181,
+        "file": "gen_302.cpp"
+      }
+    ],
+    "discovered-only:sldt": [
+      {
+        "function": 7638133,
+        "address": 7638139,
+        "file": "gen_303.cpp"
+      },
+      {
+        "function": 7895741,
+        "address": 7895756,
+        "file": "gen_330.cpp"
+      }
+    ],
+    "discovered-only:sti": [
+      {
+        "function": 2228226,
+        "address": 2228226,
+        "file": "gen_017.cpp"
+      },
+      {
+        "function": 4769285,
+        "address": 4769285,
+        "file": "gen_094.cpp"
+      },
+      {
+        "function": 4918293,
+        "address": 4918295,
+        "file": "gen_113.cpp"
+      },
+      {
+        "function": 5641819,
+        "address": 5641819,
+        "file": "gen_253.cpp"
+      },
+      {
+        "function": 6699057,
+        "address": 6699057,
+        "file": "gen_279.cpp"
+      },
+      {
+        "function": 7853008,
+        "address": 7853008,
+        "file": "gen_326.cpp"
+      }
+    ],
+    "discovered-only:undecodable": [
+      {
+        "function": 1282563,
+        "address": 1282565,
+        "file": "gen_000.cpp"
+      },
+      {
+        "function": 1329143,
+        "address": 1329146,
+        "file": "gen_000.cpp"
+      },
+      {
+        "function": 1769472,
+        "address": 1769485,
+        "file": "gen_008.cpp"
+      },
+      {
+        "function": 1835068,
+        "address": 1835071,
+        "file": "gen_009.cpp"
+      },
+      {
+        "function": 1900544,
+        "address": 1900552,
+        "file": "gen_010.cpp"
+      },
+      {
+        "function": 2097156,
+        "address": 2097163,
+        "file": "gen_014.cpp"
+      },
+      {
+        "function": 2133334,
+        "address": 2133338,
+        "file": "gen_015.cpp"
+      },
+      {
+        "function": 2162688,
+        "address": 2162694,
+        "file": "gen_016.cpp"
+      },
+      {
+        "function": 2717752,
+        "address": 2717764,
+        "file": "gen_027.cpp"
+      },
+      {
+        "function": 2717797,
+        "address": 2717813,
+        "file": "gen_027.cpp"
+      },
+      {
+        "function": 2807729,
+        "address": 2807733,
+        "file": "gen_029.cpp"
+      },
+      {
+        "function": 3080192,
+        "address": 3080197,
+        "file": "gen_034.cpp"
+      }
+    ]
+  }
+}
