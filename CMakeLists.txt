@@ -13,6 +13,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/generated/full/table.cpp")
     add_executable(ffxii_recomp src/main.cpp)
     target_link_libraries(ffxii_recomp PRIVATE ffxii_lifted recomp_win32 recomp_ucrt recomp_dinput8 recomp_xinput recomp_dbghelp recomp_steam recomp_dxgi recomp_d3d11 recomp_d3dcompiler)
     recomp_bundle(ffxii_recomp)
+    recomp_whole_archive(ffxii_recomp)
 endif()
 
 if(FFXII_EXE)
