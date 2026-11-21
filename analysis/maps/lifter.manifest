@@ -1,1 +1,64 @@
 # FFXII 1.0.4.0 function overrides and discovered continuation sites.
+#
+# The lifter reads catch funclets, unwind actions, catch continuations and
+# __except targets from the image itself, so they need no lines here.
+# Diagnostic probes (probe <VA> <name>) go here while a diagnosis runs and
+# come out afterwards: a probe site is an entry and splits its function.
+
+entry 00861ED8 VCRUNTIME140.DLL::__C_specific_handler
+
+# Import thunk of __intrinsic_setjmp. Its callers are luaD_rawrunprotected
+# (0081E050, Lua 5.2.1) and three functions near 0016E4A0. longjmp is an
+# import the runtime handles, so it needs no resume site.
+setjmp 00861EF6 VCRUNTIME140.DLL::__intrinsic_setjmp
+
+# Switch tables Ghidra exported wrong: target = image base + dword[table + 4i],
+# read from the image with the bound from the cmp/ja before each dispatch
+# (2026-11-20). 007137BA was missing case 0 and the default: after New Game
+# the boot hit "branch at 007137BA to 007137BC outside lifted code".
+jumptable 0037C4C9 0037C4CB,0037C4E0,0037C550,0037C566,0037C59B,0037C5AD,0037C62A,0037C656,0037C661,0037C689,0037C6C3
+jumptable 0058064F 00580651,00580750,005806A4,005806CC,005806E5,00580711,0058072D,0058074B
+jumptable 007137BA 007137BC,007137BF,00713782,007137C5,007137CB,007137D1,007137D7
+# Two-level table (byte index at 0071B710, 36 cases) in a function Ghidra missed.
+entry 0071B6B0
+jumptable 0071B6D8 0071B6DA,0071B6E2,0071B6EA,0071B6F2,0071B6F7
+
+# Indirect tail calls (jmp through a function-pointer register) that
+# jumptables.tsv lists as switches with only the targets Ghidra saw. After
+# New Game the boot hit "branch at 00254937 to 002E1CA0 outside lifted code".
+tailcall 00237074
+tailcall 00254836
+tailcall 00254937
+tailcall 002549E2
+tailcall 003050FE
+tailcall 0039021C
+tailcall 0039027C
+tailcall 0050556C
+tailcall 007FA648
+tailcall 00809958
+tailcall 0085E686
+tailcall 0085E6F9
+tailcall 00883342
+
+# 2026-11-20 static audit of every indirect jmp in .text (981 reached sites,
+# scripts in the session scratchpad audit/audit.py). Classes: 503 switch
+# tables whose targets I recomputed from the table and cmp/ja bound (all
+# match jumptables.tsv except the four fixed above); 245 jmp [rip+x] import
+# thunks or pointer hooks, 177 jmp [reg+off] / [table+reg*8] vtable and
+# pointer-table tail calls, 48 jmp reg tail calls through a loaded pointer
+# (none of these need a row). One more tail call still had a Ghidra row:
+# a counter hook that jumps through a function pointer.
+tailcall 0085E71B
+
+# Loose-file mod override (src/mods.cpp, analysis/formats/
+# vbf-runtime-read-path.md): VBF Find, Reader::Read and reader release.
+replace 0019AEE0
+replace 00215110
+replace 002150D0
+
+# Field-interaction probe (src/probe.cpp, FFXII_PROBE=1): talk flags,
+# talk target, ellipse distance, facing test.
+replace 002E0FA0
+replace 002647D0
+replace 003DA5A0
+replace 003A1BB0
