@@ -15,6 +15,7 @@
 #include <map>
 #include <string>
 
+#include "direct_hooks.h"
 #include "guest_globals.h"
 #include "runtime/env.h"
 #include "x86/lifted.h"
@@ -347,6 +348,7 @@ struct RegisterConditions {
 namespace recomp::gen {
 
 void f_002E0FA0(Ctx& c) {
+  if (::ffxii::direct::Enter<0x002E0FA0>(c)) return;
   f_002E0FA0_lifted(c);
   g_flags.store(uint32_t(c.rax), std::memory_order_relaxed);
   if (!On()) return;
@@ -364,6 +366,7 @@ void f_002E0FA0(Ctx& c) {
 }
 
 void f_002647D0(Ctx& c) {
+  if (::ffxii::direct::Enter<0x002647D0>(c)) return;
   f_002647D0_lifted(c);
   g_talk_target.store(c.rax, std::memory_order_relaxed);
   if (!On()) return;

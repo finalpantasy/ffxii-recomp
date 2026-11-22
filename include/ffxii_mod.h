@@ -37,9 +37,11 @@
  * Coverage (version 1): a hook catches every call that goes through the
  * dispatcher: function pointers, C++ virtual calls, callbacks, Lua C
  * functions, thread entry points and window procedures. Direct calls from
- * one lifted function to another are compiled as plain C++ calls and still
- * reach the lifted body. hook_covers_direct tells which applies; a later
- * version makes every function hookable.
+ * one lifted function to another are compiled as plain C++ calls and reach
+ * the lifted body, except for the functions listed in src/direct_hooks.h
+ * (field handler and drivers, task create and task list, field state flags,
+ * talk target), whose hooks catch direct calls too. hook_covers_direct
+ * tells which applies; a later version makes every function hookable.
  *
  * Threads. Hooks run on whatever guest thread made the call, so module
  * state shared between calls needs its own locking. Install hooks only in

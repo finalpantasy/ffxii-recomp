@@ -113,6 +113,8 @@ hook 00519015 fps_518_restore
 hook 0051B1A5 fps_51B_index
 hook 0051B1CF fps_51B_blend
 replace 0022A580
+# Task create, direct-hookable for native modules (src/direct_hooks.cpp).
+replace 00244F50
 hook 0062369C fps_limiter_interval
 hook 001E043A fps_debt_interval
 hook 001E0528 fps_frame_interval

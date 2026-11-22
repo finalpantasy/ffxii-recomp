@@ -5,6 +5,9 @@
  * 100th, ... call, then runs the original. "VA skip=N" instead swallows
  * the calls whose message id (first dword at rdx) is N: the hook sets
  * rax = 0 and returns through api->ret without running the original.
+ * "VA msg" logs the first call of each message id. Use msg and skip= only
+ * on task handlers (analysis/hook-points.md): for other functions rdx is
+ * not a message pointer.
  * Install as
  *
  *   mods/native-sample/mod.ini     id = native-sample
@@ -28,6 +31,7 @@ static volatile long long g_calls[SLOTS];
 static volatile unsigned long long g_ids[SLOTS];  // message ids seen (< 64)
 static int g_skip[SLOTS];  // message id to swallow (skip=N), or -1
 static volatile long long g_skipped[SLOTS];
+static int g_msg[SLOTS];  // log message ids ("msg" or "skip=" on the line)
 
 /* Task handlers take (task, msg) with the message id in msg's first dword
  * (analysis/hook-points.md): log the first call of each id per function. */
@@ -49,7 +53,7 @@ static int LogMessageId(int i, ffxii_cpu* cpu, uint64_t ret) {
 static void Count(int i, ffxii_cpu* cpu) {
   uint64_t ret0;
   memcpy(&ret0, g_api->guest_ptr(g_api->reg(cpu, FFXII_RSP)), 8);
-  if (LogMessageId(i, cpu, ret0) == g_skip[i] && g_skip[i] >= 0) {
+  if (g_msg[i] && LogMessageId(i, cpu, ret0) == g_skip[i] && g_skip[i] >= 0) {
     /* Replace this call: result 0, then return as `ret` would. */
     long long k = __atomic_add_fetch(&g_skipped[i], 1, __ATOMIC_RELAXED);
     if (k == 1 || k == 1000) {
@@ -102,6 +106,7 @@ FFXII_MOD_EXPORT int ffxii_mod_init(const ffxii_api* api) {
     g_va[n] = va;
     const char* sk = strstr(line, "skip=");
     g_skip[n] = sk ? atoi(sk + 5) : -1;
+    g_msg[n] = sk != NULL || strstr(line, "msg") != NULL;
     if (api->hook(va, kStubs[n], &g_orig[n]) != 0) {
       snprintf(msg, sizeof msg, "%08llX is not a lifted function entry", (unsigned long long)va);
       api->log(api, msg);

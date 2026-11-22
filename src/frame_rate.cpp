@@ -29,6 +29,7 @@
 #include <set>
 #include <vector>
 
+#include "direct_hooks.h"
 #include "guest_globals.h"
 #include "runtime/env.h"
 #include "runtime/platform.h"
@@ -518,6 +519,7 @@ void MaybeTickLog(uint32_t arg) {
 }
 
 void f_00250540(::recomp::Ctx& c) {
+  if (::ffxii::direct::Enter<0x00250540>(c)) return;
   if (SkipThisFrame()) {
     ++g_driver_skips;
     c.rsp += 8;  // ret
@@ -538,6 +540,7 @@ void f_00250540(::recomp::Ctx& c) {
 // 0x22B7E0): update 0x184960, the tick add, four task lists, then 0x367200.
 // FFXII_SKIP_DRIVER skips it the same way.
 void f_002507C0(::recomp::Ctx& c) {
+  if (::ffxii::direct::Enter<0x002507C0>(c)) return;
   if (SkipThisFrame()) {
     ++g_driver_skips;
     c.rsp += 8;  // ret
@@ -597,6 +600,7 @@ void f_0022A580(::recomp::Ctx& c) {
 }
 
 void f_0022A770(::recomp::Ctx& c) {
+  if (::ffxii::direct::Enter<0x0022A770>(c)) return;
   static const bool on = recomp::Env("SKIP_HANDLER") != nullptr;
   if (on && SkipThisFrame()) {
     ++g_handler_skips;
@@ -646,6 +650,7 @@ void f_0022B8C0(::recomp::Ctx& c) {
 // head, walk the task tree (callback +0, parent +0x10, first child +0x18, next sibling +0x20; 0x2482E0 unlinks) and
 // log each distinct callback with its count.
 void f_00248030(::recomp::Ctx& c) {
+  if (::ffxii::direct::Enter<0x00248030>(c)) return;
   static const char* e = recomp::Env("TASKS");
   if (e) {
     static std::map<uint64_t, int> calls;
@@ -681,6 +686,7 @@ void f_00248030(::recomp::Ctx& c) {
 // at 0x2064AD3 (cases 0-6). FFXII_MODE_LOG=1 logs each change of that byte
 // with the call count.
 void f_00259240(::recomp::Ctx& c) {
+  if (::ffxii::direct::Enter<0x00259240>(c)) return;
   f_00259240_lifted(c);
   static const bool on = recomp::Env("MODE_LOG") != nullptr;
   if (!on) return;

@@ -6,6 +6,8 @@
 
 #include "native_mods.h"
 
+#include "direct_hooks.h"
+
 #include <cstdio>
 #include <cstring>
 #include <deque>
@@ -78,11 +80,12 @@ void* ApiGuestPtr(uint64_t va) { return recomp::g_guest_base + va; }
 int ApiHook(uint64_t va, ffxii_fn fn, ffxii_fn* original) {
   GuestFn prev = recomp::ReplaceDispatch(va, reinterpret_cast<GuestFn>(fn));
   if (!prev) return -1;
+  prev = ffxii::direct::Install(va, reinterpret_cast<GuestFn>(fn), prev);
   if (original) *original = reinterpret_cast<ffxii_fn>(prev);
   std::fprintf(stderr, "[native] hook %08llX\n", static_cast<unsigned long long>(va));
   return 0;
 }
-int ApiCoversDirect(uint64_t) { return 0; }
+int ApiCoversDirect(uint64_t va) { return ffxii::direct::Covers(va) ? 1 : 0; }
 void ApiRet(ffxii_cpu* cpu) { C(cpu).rsp += 8; }
 
 uint64_t ApiCall(ffxii_cpu* cpu, uint64_t va, const uint64_t* a, uint32_t n) {

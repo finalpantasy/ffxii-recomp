@@ -119,13 +119,26 @@ Lua 5.2.1 is linked in, but the game registers no C functions of its own:
 The openers (`luaopen_*`, table 0x1CCB3E0) were never dispatched in the
 boot, save-load or field runs. Game scripting is not Lua.
 
-## Not hookable yet
+## Direct calls
 
 Direct calls between lifted functions do not go through the dispatcher.
-For example, the field handler 0x22A770 is only called directly, and a hook
-on it saw no calls (`win-native2.log`). Covering those needs the lifter to
-emit an entry check in every function and a full regeneration of the
-generated code.
+For example, the field handler 0x22A770 is only called directly, and a
+dispatcher hook on it saw no calls (`win-native2.log`).
+
+`src/direct_hooks.h` lists functions whose hooks catch direct calls too:
+0x22A770 (field frame handler), 0x2507C0 (field driver), 0x250540 (main
+driver), 0x259240 (frame body step), 0x2E0FA0 (field state flags), 0x2647D0
+(talk target), 0x248030 (task list run) and 0x244F50 (task create). Each
+has a `replace` wrapper that first calls `direct::Enter<VA>`; a module's
+`original` is a trampoline that skips the hook once, so chains of modules
+work as through the dispatcher. `hook_covers_direct` returns 1 for them.
+With the sample counter on all eight and the window procedure 0x798FF0,
+`fight7.txt` at `--fps 120` counted more than 10,000 calls of 0x22A770,
+0x2507C0, 0x248030 and 0x2E0FA0 and more than 100 of 0x244F50 and
+0x2647D0, with no fatal (`win-direct2.log`). Adding a function needs a
+`replace` line, a list entry and a relift of the changed file. Covering
+every function still needs an entry check in the lifter and a full
+regeneration.
 
 ## Tools
 

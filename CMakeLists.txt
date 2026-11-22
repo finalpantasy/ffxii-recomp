@@ -21,7 +21,7 @@ if(WIN32)
 endif()
 
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/generated/full/table.cpp")
-    recomp_add_lifted(ffxii_lifted "${CMAKE_CURRENT_SOURCE_DIR}/generated/full" src/mods.cpp src/mod_index.cpp src/probe.cpp src/frame_rate.cpp src/watch.cpp src/cbscan.cpp)
+    recomp_add_lifted(ffxii_lifted "${CMAKE_CURRENT_SOURCE_DIR}/generated/full" src/mods.cpp src/mod_index.cpp src/probe.cpp src/frame_rate.cpp src/watch.cpp src/cbscan.cpp src/direct_hooks.cpp)
     add_executable(ffxii_recomp src/main.cpp src/native_mods.cpp)
     target_include_directories(ffxii_recomp PRIVATE include)
     target_link_libraries(ffxii_recomp PRIVATE ffxii_lifted recomp_win32 recomp_ucrt recomp_dinput8 recomp_xinput recomp_dbghelp recomp_steam recomp_dxgi recomp_d3d11 recomp_d3dcompiler)
