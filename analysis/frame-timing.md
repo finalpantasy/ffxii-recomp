@@ -62,9 +62,11 @@ The likely route past 60 fps is to keep the simulation at 60 Hz and render extra
 
 ## Render side (first look, 2026-11-22)
 
-- After the update, 0x250540 builds the frame's display lists into double buffers:
-  - 0x2481A0 flips the buffer index 0x208ED5C (xor 1) and sets 0x208F560.
-  - 0x248030 builds one list into that buffer. It is called for the three lists at 0x208EA20, then 0x208EA40 and 0x208EA48; it also checks 0x1EDDA0.
+- After the update, 0x250540 runs the game's task lists. These are task lists, not display lists; an earlier version of this note called them display lists, which was wrong.
+  - 0x2481A0 flips the frame parity 0x208ED5C (xor 1) and sets 0x208F560.
+  - 0x248030 walks one linked list of task objects. For each task whose parity bit (bit 17 of +0x40) differs from 0x208ED5C, it calls the task's callback (`call [rbx]`) and then marks the bit, so each task runs once per frame.
+  - 0x248030 is called for the three lists at 0x208EA20, then 0x208EA40 and 0x208EA48. With 0x1EDDA0 it also counts frames in +0xB4.
+  - 0x2465F0 creates a task: callback at +0, flags at +0x40/+0x44, and a default callback of 0x5C5230.
   - 0x248190 clears 0x208F560.
 - 0x250CA0 reads the tick counter 0x208F570, so some list content is tick-timed.
 - The render thread consumes the other buffer. Its busiest lifted function, f_00628B40 (called only from 0x629970), copies packet floats into GPU buffers.
@@ -107,4 +109,4 @@ Method: `FFXII_SNAP=start,count,interval` (src/frame_rate.cpp) writes `.data` sn
   - It multiplies the source matrix into 0x2AEDD30 (0x202D70) and copies the view to 0x2AED580 (0x202C70).
   - It uses the object at 0x2AED4A0 (+0xC0) as scratch.
 - One `replace` on 0x3820C0 can therefore record each tick's final camera (view at 0x2097560 and 0x2AED580) and, for an in-between frame, overwrite both with a blend.
-- Still open: how to present an extra frame between ticks. That needs either re-running the render submission for the same display lists, or splitting 0x250540's update (0x184960) from its list build and present. Next, trace whether the render thread can draw one list buffer twice (the flip at 0x2481A0 and the consumer side of 0x208ED5C).
+- Still open: how to present an extra frame between ticks. That needs either re-running the render submission for the same display lists, or splitting 0x250540's update (0x184960) from its list build and present. 0x208ED5C is task bookkeeping, not a render buffer index, so drawing is done by some of these tasks. Next, sort the tasks in the 0x208EA20-0x208EA48 lists by callback into simulation tasks and draw tasks. An in-between frame then runs only the draw tasks with the blended camera.
