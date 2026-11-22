@@ -44,6 +44,16 @@ Goal: frame rates above 60 fps without changing game speed. This records what dr
   - The interval constant is 0x9010A0 = 1/60, or 0x900378 = 1.001/60 when the refresh rate is not a multiple of 10.
 - 0x1E03F0 and 0x1D8240 use the same constants to turn the 60 Hz tick count into seconds, so they must not be changed globally.
 - VSync off alone still caps at 60 (`win-nv1.log`), so this limiter is the cap.
+- The wait (0x6236D9-0x6237AB): 0x5CC930 returns the time in seconds (double).
+  The remaining time is now - 0x2CB60E8 (start) - 0x1F2DF10 (last frame) - interval.
+  If that is negative, the limiter sleeps once for the remaining milliseconds,
+  rounded down to a multiple of 0x2CF2540 (the timer period) minus 1, then spins
+  on Sleep(0) and 0x5CC930 until the time is reached. 0x1F2DF10 then advances by
+  min(interval, overshoot), so late frames catch up.
+- In combat that spin is about 300,000 Sleep(0) and QueryPerformanceCounter calls a
+  second (`FFXII_IMPORT_STATS=1`, `win-imp2.log`), roughly 1-2 ms of one core per frame.
+  It costs CPU, not frame rate. A host-side precise wait would need the deadline,
+  which depends on r14 (frames per interval), held in a register inside the function.
 
 ## Experiment 2: SIM_MULT=2, limiter interval halved (`win-sim2b.log`)
 
