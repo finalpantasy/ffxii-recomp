@@ -62,7 +62,7 @@ Goal: frame rates above 60 fps without changing game speed. This records what dr
 - The 1/60 s tick counter 0x208F570 then advances once per frame (about 120 a second), so tick-driven logic runs twice as fast.
 - The game measures time in whole 1/60 s ticks: update() takes an integer n, which is 1 at 60 fps and 1 or 2 at 30 fps. A 120 fps frame is half a tick, which these integer counters cannot represent.
 
-Conclusion: higher frame rates need the simulation to stay at 60 Hz with rendered frames interpolated between ticks, not a smaller step. `FFXII_SIM_MULT` stays as a measurement switch only; its game speed is wrong.
+Conclusion at the time: higher frame rates would need a 60 Hz simulation with interpolated frames. Superseded: the section "Native 120 fps" below keeps the game speed with whole ticks on every k-th frame.
 
 Open questions:
 1. Answered above: the cap is the limiter at 0x6234A0.
@@ -191,3 +191,70 @@ The dump holds the first 64 uploads each of 928 and 8864 bytes after the given f
   - write V' (transposed) at 8864:0x1F80;
   - replace the 928:0x2D0 block M = P·V with M·V⁻¹·V'. V⁻¹ is the camera transform at 0x20975A0, so the projection is not needed.
 - How to issue a second frame is still open. A route to evaluate is to record each frame on two D3D11 deferred contexts, with the in-between one receiving the patched buffer data at Unmap, and then run both command lists with a present between them. Deferred contexts accept only WRITE_DISCARD (and NO_OVERWRITE for some buffers) and cannot do queries or readback, so the game's map types decide whether this works.
+
+## Native 120 fps (2026-11-22): `--fps N`, `FFXII_SIM_MULT=k`
+
+The game updates k*60 times a second at unchanged speed: 1/60 s of
+tick-counted time passes once every k frames. Verified at k=2
+(`win-sp120h.log`, `fight7.txt`, 300 s, 81% machine load from other work):
+calm field stretches present 115-120 fps with 59.9-60.2 ticks a second, and
+the tick rate never goes above 60. When the machine falls behind, the frame
+rate drops toward 60 (two frame bodies per present) and, below that, the game
+slows down as it does at 60 fps. The run logged no fatal errors.
+
+Pieces (src/frame_rate.cpp):
+1. **Timing globals:** the 0x1EDDC0 wrapper sets 0x1DFE0B4/0x1DFE0B8 to 2k
+   and 0x1DFE0BC to 1/(2k).
+2. **Tick frames:** each driver (0x250540, 0x2507C0, 0x250730) counts its own
+   calls. Only every k-th call advances the tick counter 0x208F570, and on
+   the other calls 0x184950 returns 0 to the callers that add the result to
+   tick time (TickGatedCaller). 0x250730 adds the tick itself, because its
+   own `2 / [0x1DFE0B4]` add is 0 at k > 1.
+3. **Frame time:** 0x1E03F0 keeps a time debt in 0x1F82D28: wall time minus
+   ticks times 1/60 s. 0x1E04F0 gives one frame's time. When the debt
+   passes one frame, 0x1E05F0 sets 0x1F82D30, and the frame function
+   0x17D6E0 runs the frame body 0x22A490 again (its loop at 0x17D836). Both
+   callers keep 0x184950's tick count of 1, and a hook divides their
+   interval by k (0x1E043A, 0x1E0528). An earlier build gated these to 0;
+   then every frame looked late and each present ran two frame bodies
+   (`win-sp120b.log`: 115 presents, 230 updates and 115 ticks a second,
+   which is double speed).
+4. **Limiter:** the render-thread limiter 0x6234A0 waits r14 * interval, with
+   r14 = [0x1DF08F8] (frames per present, sent by the update 0x184960
+   through render command 0x17ECB0). A hook at 0x62369C divides the
+   interval by k in xmm0. The constants 0x9010A0/0x900378 stay unchanged
+   in memory, because game-thread code (0x1E03F0, 0x1E04F0) reads them
+   while the limiter sleeps.
+5. **Game-thread pacing:** the 0x22A580 wrapper holds the game thread to a
+   fixed 1/(60k) s step, up to 4 steps behind. The limiter alone does not
+   hold the game thread to one frame per present above 60.
+6. **Hard-coded 60 fps sites:** these are instruction hooks (manifest `hook`).
+   - 0x518F50 adds an acceleration on odd countdown values. At k*60 it adds
+     on every 2k-th value (hooks 0x519001 and 0x519015).
+   - 0x51B150 samples a 30-entry table at counter/2 with a 1/2 blend. At
+     k*60 it samples at counter/2k with blend (counter mod 2k)/2k (hooks
+     0x51B1A5 and 0x51B1CF).
+   - 0x32AE70's decay factor is 0.5^(1/(2k)).
+   - 0x1EDEC0's every-second-count test becomes every 2k-th.
+
+Not adjusted:
+- 0x32D4AA, a filter with separate 30 and 60 fps constants whose meaning is
+  not yet clear.
+- 0x3E5DF2, a one-step phase offset at setup (1/120 s instead of 1/60).
+- 0x53B129, debug text formatting.
+- The other 1EDE70/1EDDA0/1EDE80 sites. They were checked by reading only,
+  not one by one in game.
+
+Lifter: the SwARc manifest directive `hook <VA> <name>` emits
+`::recomp::Probe(c, VA, name)` before the instruction without making VA an
+entry. The game takes the call with `recomp::SetProbeHook`
+(`x86/probe_hook.h`).
+
+Diagnostics: `FFXII_SPEEDLOG=1` logs every 5 s:
+- fps and ticks a second;
+- the ticks each update added;
+- each driver's calls per present;
+- the field handler's call sites;
+- the limiter's wait and frames per present.
+
+It works at 60 fps too, for a baseline.

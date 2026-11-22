@@ -19,6 +19,9 @@
 #include "x86/lifted.h"
 #include "x86/runtime.h"
 
+namespace recomp::ffxii {
+uint64_t LimitedFrames();
+}
 namespace recomp::gen {
 void f_002E0FA0_lifted(::recomp::Ctx& c);
 void f_002647D0_lifted(::recomp::Ctx& c);
@@ -29,6 +32,8 @@ void f_003A1BB0_lifted(::recomp::Ctx& c);
 namespace recomp {
 using TestCondition = bool (*)(const char* arg, double waited, float* lx, float* ly, uint16_t* buttons);
 void RegisterTestCondition(const char* name, TestCondition fn);
+using TestClock = double (*)();
+void SetTestClock(TestClock fn);
 }  // namespace recomp
 
 namespace {
@@ -107,6 +112,58 @@ bool PlayerXZ(float* x, float* z) {
   return true;
 }
 
+}  // namespace
+
+namespace recomp::ffxii {
+// FFXII_SPEEDLOG=1: once per 60 ticks (1 s of game time), log the camera's
+// path length and the camera's summed turn over those ticks, with the frames
+// they took. At a correct speed both match between 60 and k*60 fps; only
+// the frame count differs. Called once per limited frame.
+void SpeedLog() {
+  static const bool on = recomp::Env("SPEEDLOG") != nullptr;
+  if (!on || !recomp::g_guest_base) return;
+  static uint32_t start = 0, prev_ticks = 0;
+  static uint64_t frames = 0;
+  static double path = 0, turn = 0;
+  static float px = 0, pz = 0, pyaw = 0;
+  static bool have = false;
+  uint32_t ticks;
+  std::memcpy(&ticks, recomp::g_guest_base + 0x208F570, 4);
+  float x = 0, z = 0;
+  // The follow camera's position (row 3 of its world transform 0x20975A0):
+  // the player's position is known only near talk targets.
+  x = Rf(0x20975A0 + 48);
+  z = Rf(0x20975A0 + 56);
+  const bool pos = true;
+  const float yaw = std::atan2(Rf(0x20975A0 + 32), Rf(0x20975A0 + 40)) * 57.29578f;
+  if (!have || ticks - prev_ticks > 8 || !pos) {  // first frame, or a load reset the counter
+    have = pos;
+    start = ticks;
+    frames = 0;
+    path = turn = 0;
+  } else {
+    path += std::hypot(x - px, z - pz);
+    float dy = yaw - pyaw;
+    while (dy > 180) dy -= 360;
+    while (dy < -180) dy += 360;
+    turn += std::fabs(dy);
+    ++frames;
+    if (ticks - start >= 60) {
+      std::fprintf(stderr, "[speed] ticks %u-%u frames %llu path %.3f turn %.2f\n", start, ticks,
+                   (unsigned long long)frames, path, turn);
+      start = ticks;
+      frames = 0;
+      path = turn = 0;
+    }
+  }
+  prev_ticks = ticks;
+  px = x;
+  pz = z;
+  pyaw = yaw;
+}
+}  // namespace recomp::ffxii
+
+namespace {
 bool ParseXZR(const char* arg, float* x, float* z, float* r) {
   *r = 1.0f;
   return std::sscanf(arg, "%f,%f,%f", x, z, r) >= 2;
@@ -242,6 +299,22 @@ bool CondAdvance(const char*, double waited, float*, float*, uint16_t* buttons) 
   return false;
 }
 
+// FFXII_TEST_CLOCK=game: test scripts run on game time, the 1/60 s tick
+// counter 0x208F570 in seconds, instead of wall time. Only forward steps of
+// at most 8 ticks count, because the counter is reset when a game loads.
+// The clock is read on the event-pump thread.
+double GameClock() {
+  static uint32_t last = 0;
+  static uint64_t total = 0;
+  if (!recomp::g_guest_base) return 0;
+  uint32_t ticks;
+  std::memcpy(&ticks, recomp::g_guest_base + 0x208F570, 4);
+  const uint32_t d = ticks - last;
+  last = ticks;
+  if (d <= 8) total += d;
+  return total / 60.0;
+}
+
 struct RegisterConditions {
   RegisterConditions() {
     recomp::RegisterTestCondition("talk", CondTalk);
@@ -251,6 +324,7 @@ struct RegisterConditions {
     recomp::RegisterTestCondition("field", CondField);
     recomp::RegisterTestCondition("busy", CondBusy);
     recomp::RegisterTestCondition("advance", CondAdvance);
+    if (const char* e = recomp::Env("TEST_CLOCK"); e && std::strcmp(e, "game") == 0) recomp::SetTestClock(GameClock);
   }
 } g_register_conditions;
 
@@ -265,7 +339,12 @@ void f_002E0FA0(Ctx& c) {
   static uint32_t prev = ~0u;
   const uint32_t v = uint32_t(c.rax);
   if (v != prev) {
-    std::fprintf(stderr, "[probe] 2E0FA0 flags 0x%08x -> 0x%08x\n", prev, v);
+    // With the 1/60 s tick counter 0x208F570 and the limited-frame count, so
+    // event lengths can be compared across frame rates.
+    uint32_t ticks;
+    std::memcpy(&ticks, g_guest_base + 0x208F570, 4);
+    std::fprintf(stderr, "[probe] 2E0FA0 flags 0x%08x -> 0x%08x (ticks %u, frame %llu)\n", prev, v, ticks,
+                 (unsigned long long)recomp::ffxii::LimitedFrames());
     prev = v;
   }
 }

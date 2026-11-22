@@ -30,13 +30,17 @@
 #include <vector>
 
 #include "runtime/env.h"
+#include "runtime/platform.h"
 #include "x86/lifted.h"
+#include "x86/probe_hook.h"
 #include "x86/runtime.h"
 
 namespace recomp::ffxii {
 void MaybeStartWatch(uint64_t frame);
 void CbScanFrame();
 bool g_skip_frame = false;  // this frame skips the driver (FFXII_SKIP_DRIVER)
+uint64_t LimitedFrames();
+void SpeedLog();
 }
 
 namespace recomp::gen {
@@ -49,10 +53,14 @@ void f_00250730_lifted(::recomp::Ctx& c);
 void f_002507C0_lifted(::recomp::Ctx& c);
 void f_003820C0_lifted(::recomp::Ctx& c);
 void f_0022A770_lifted(::recomp::Ctx& c);
+void f_0022A580_lifted(::recomp::Ctx& c);
 void f_0060EC80_lifted(::recomp::Ctx& c);
 void f_0060A410_lifted(::recomp::Ctx& c);
 void f_0022B6E0_lifted(::recomp::Ctx& c);
 void f_0022B8C0_lifted(::recomp::Ctx& c);
+void f_00184950_lifted(::recomp::Ctx& c);
+void f_001EDEC0_lifted(::recomp::Ctx& c);
+void f_0032AE70_lifted(::recomp::Ctx& c);
 
 namespace {
 int SimMult() {
@@ -151,6 +159,173 @@ void f_001EDDC0(::recomp::Ctx& c) {
   std::fprintf(stderr, "[frame_rate] SIM_MULT=%d: %d frames per 30 Hz tick, scale %g\n", k, ticks, scale);
 }
 
+namespace {
+// Native k*60 fps (SIM_MULT=k in 60 fps mode): only every k-th frame is a
+// tick frame, where 1/60 s of tick-counted game time passes.
+bool HighRate() {
+  uint32_t fps60;
+  std::memcpy(&fps60, recomp::g_guest_base + 0x1F82E38, 4);
+  return SimMult() > 1 && fps60 != 0;
+}
+// A behind game runs 2-3 updates (driver calls) per presented frame, so
+// tick frames are counted in updates, not in limited frames.
+// Each driver keeps its own count: the field frame runs more than one driver
+// (sharing one count made the same driver land on every tick).
+enum Driver { kMain, kField, kMode0, kHandler, kDrivers };
+uint64_t g_updates = 0;               // all driver calls
+uint64_t g_driver_updates[kDrivers] = {};
+uint64_t g_driver_frame[kDrivers] = {};  // calls in the current limited frame
+uint64_t g_driver_hist[kDrivers][4] = {};  // calls per limited frame: 0/1/2/3+
+bool g_tick_now = true;
+uint64_t g_limiter_ns = 0, g_limiter_per[4] = {};
+uint64_t g_field_pre = 0, g_field_loop = 0, g_field_other = 0;
+bool TickFrame() { return g_tick_now; }
+void BeginUpdate(Driver d) {
+  ++g_updates;
+  ++g_driver_frame[d];
+  g_tick_now = g_driver_updates[d]++ % uint64_t(SimMult()) == 0;
+}
+uint64_t g_tick_hist[2][4] = {};  // ticks added per update: [tick update][0/1/2/3+]
+uint32_t Ticks() {
+  uint32_t v;
+  std::memcpy(&v, recomp::g_guest_base + 0x208F570, 4);
+  return v;
+}
+void SetTicks(uint32_t v) { std::memcpy(recomp::g_guest_base + 0x208F570, &v, 4); }
+void CountUpdate(uint32_t before) {
+  const uint32_t d = Ticks() - before;
+  g_tick_hist[TickFrame()][d < 3 ? d : 3]++;
+}
+
+// Return addresses of the 0x184950 calls whose caller advances tick-counted
+// time by the result: the tick counter adds in the drivers (0x250540,
+// 0x2506D0, 0x2507C0), the play-time and timeline steps the field driver
+// passes it to (0x254CC0, 0x367200) and the timeline module
+// 0x35FF90/0x360080. On other frames they get 0. Callers that divide by it
+// (0x361170, 0x361200), compare it with 1 and 2 (0x1D7DD0, 0x1D8520,
+// 0x22A580) or turn it into seconds per frame (0x1E03F0, 0x1E04F0, see
+// FpsHook) keep the original 1.
+bool TickGatedCaller(uint64_t ret) {
+  switch (ret - 5) {
+    case 0x250582: case 0x2506DD: case 0x2507FC: case 0x25080C: case 0x2508B5:
+    case 0x35FFE3: case 0x360046: case 0x36008D:
+      return true;
+    default:
+      return false;
+  }
+}
+}  // namespace
+
+// 0x184950 returns the 1/60 s ticks of this frame ([0x1F3DA18], 1 at 60 fps).
+void f_00184950(::recomp::Ctx& c) {
+  uint64_t ret;
+  std::memcpy(&ret, recomp::g_guest_base + c.rsp, 8);
+  f_00184950_lifted(c);
+  if (HighRate() && !TickFrame() && TickGatedCaller(ret)) c.rax = 0;
+}
+
+// 0x32AE70 sets the per-frame decay factor [0x22C3180]: 0.5 at 30 fps and
+// sqrt(0.5) at 60, so it halves per 1/30 s. At k*60 fps: 0.5^(1/(2k)).
+void f_0032AE70(::recomp::Ctx& c) {
+  f_0032AE70_lifted(c);
+  if (!HighRate()) return;
+  const float f = float(std::pow(0.5, 1.0 / (2.0 * SimMult())));
+  std::memcpy(recomp::g_guest_base + 0x22C3180, &f, 4);
+}
+
+// 0x1EDEC0(counter): whether a 30 Hz step falls on this frame for a task
+// whose per-frame counter (+0xB4) is `counter`. At 60 fps it is every second
+// count (~counter & 1); at k*60 fps it is every 2k-th.
+void f_001EDEC0(::recomp::Ctx& c) {
+  const uint32_t counter = uint32_t(c.rcx);
+  f_001EDEC0_lifted(c);
+  uint32_t flag;
+  std::memcpy(&flag, recomp::g_guest_base + 0x1DFE0C0, 4);
+  if (HighRate() && flag == 0) c.rax = counter % uint32_t(2 * SimMult()) == 0 ? 1 : 0;
+}
+
+// Instruction-level fixes for k*60 fps (manifest `hook` lines, which run
+// before the instruction with registers in Ctx). Each site hard-codes the
+// 60 fps case as "every second frame" or "half a 30 Hz step".
+namespace {
+uint64_t g_518_addr = 0;  // the byte 0x519001 changed, restored at 0x519015
+uint8_t g_518_byte = 0;
+bool FpsHook(recomp::Ctx& c, uint64_t va, const char* name) {
+  (void)name;
+  uint8_t* B = recomp::g_guest_base;
+  const uint32_t per = uint32_t(2 * SimMult());  // frames per 30 Hz step
+  switch (va) {
+    case 0x519001: {
+      // 0x518F50 counts [rbx] down from a scaled frame count and, at 60
+      // fps, adds the acceleration [rbx+4] to the velocity [rbx-8] on odd
+      // counts only (once per 30 Hz step); `test byte [rbx], 1` decides.
+      // At k*60 the add belongs on every 2k-th count: set bit 0 of the
+      // tested byte to that answer and put the byte back at 0x519015.
+      if (!HighRate()) return true;
+      uint32_t count;
+      std::memcpy(&count, B + c.rbx, 4);
+      g_518_addr = c.rbx;
+      g_518_byte = B[c.rbx];
+      B[c.rbx] = uint8_t((g_518_byte & ~1u) | (count % per == 1 ? 1u : 0u));
+      return true;
+    }
+    case 0x519015:
+      if (g_518_addr) {
+        B[g_518_addr] = g_518_byte;
+        g_518_addr = 0;
+      }
+      return true;
+    case 0x51B1A5:
+      // 0x51B150 samples a 30-entry table by the frame counter [rbx+0x30]
+      // (which wraps at 30 * [0x1DFE0B4]): at 60 fps entry counter / 2,
+      // `shr r8d, 1` here, blended by (counter & 1) / 2. At k*60 the entry
+      // is counter / 2k; make the shift produce it.
+      if (HighRate()) c.r8 = (uint32_t(c.r8) / per) * 2;
+      return true;
+    case 0x51B1CF: {
+      // xmm5 holds the blend fraction before `subss xmm8, xmm5`.
+      if (!HighRate()) return true;
+      uint16_t counter;
+      std::memcpy(&counter, B + c.rbx + 0x30, 2);
+      const float f = float(counter % per) / float(per);
+      std::memcpy(c.xmm[5].b, &f, 4);
+      return true;
+    }
+    case 0x1E043A:
+    case 0x1E0528:
+      // 0x1E03F0 (time debt: wall time minus ticks * 1/60 s, in 0x1F82D28)
+      // and 0x1E04F0 (this frame's time) have loaded the 1/60 s interval
+      // into xmm6 and now ask 0x184950 for this frame's ticks. When the debt
+      // passes one frame, 0x17D6E0 runs the frame body again (0x1E05F0,
+      // flag 0x1F82D30). At k*60 a frame is 1/(60k) s: keep its tick count
+      // (not tick-gated) and divide the interval. Gating these to 0 made
+      // every frame look late, so each present ran two frame bodies.
+      if (HighRate()) {
+        double v;
+        std::memcpy(&v, c.xmm[6].b, 8);
+        v /= SimMult();
+        std::memcpy(c.xmm[6].b, &v, 8);
+      }
+      return true;
+    case 0x62369C: {
+      // The limiter 0x6234A0 has loaded its 1/60 s interval (0x9010A0 or
+      // 0x900378) into xmm0; at k*60 fps it waits 1/(60k) s.
+      const int k = LimitDiv();
+      if (k > 1) {
+        double v;
+        std::memcpy(&v, c.xmm[0].b, 8);
+        v /= k;
+        std::memcpy(c.xmm[0].b, &v, 8);
+      }
+      return true;
+    }
+    default:
+      return false;
+  }
+}
+const bool g_fps_hook = (recomp::SetProbeHook(FpsHook), true);
+}  // namespace
+
 // FFXII_SNAP=start,count,interval (wall seconds since the first limited
 // frame): writes the image's .data section (0x1DF0000, 0x11A7530 bytes) to
 // snap-NN-<frame>.bin, for finding camera and object state by diffing.
@@ -182,30 +357,100 @@ void f_006234A0(::recomp::Ctx& c) {
   recomp::ffxii::MaybeStartWatch(g_frames);
   recomp::ffxii::CbScanFrame();
   MaybeCamLog();
+  recomp::ffxii::SpeedLog();
   const int k = LimitDiv();
-  if (k <= 1) return f_006234A0_lifted(c);
   uint8_t* B = recomp::g_guest_base;
-  static double a, b;  // original constants, read once
-  static const bool init = (std::memcpy(&a, B + 0x9010A0, 8), std::memcpy(&b, B + 0x900378, 8), true);
-  (void)init;
-  const double ak = a / k, bk = b / k;
-  std::memcpy(B + 0x9010A0, &ak, 8);
-  std::memcpy(B + 0x900378, &bk, 8);
-  f_006234A0_lifted(c);
-  std::memcpy(B + 0x9010A0, &a, 8);
-  std::memcpy(B + 0x900378, &b, 8);
+  if (k <= 1) {
+    f_006234A0_lifted(c);
+    // The frame statistics below also serve as the 60 fps baseline
+    // (FFXII_SPEEDLOG=1); otherwise nothing more to do.
+    static const bool stats = recomp::Env("SPEEDLOG") != nullptr;
+    if (!stats) return;
+  } else {
+    // The interval is divided by k at 0x62369C (FpsHook), not in memory:
+    // game-thread code (0x1E03F0, 0x1D8240) reads the same constants while
+    // this render-thread call sleeps.
+    const uint64_t t0 = recomp::platform::MonotonicNs();
+    f_006234A0_lifted(c);
+    g_limiter_ns += recomp::platform::MonotonicNs() - t0;
+    uint32_t per;
+    std::memcpy(&per, B + 0x1DF08F8, 4);  // frames per present (r14 in the limiter)
+    g_limiter_per[per < 3 ? per : 3]++;
+  }
   static auto t0 = std::chrono::steady_clock::now();
   static uint32_t ticks0 = 0, frames = 0;
   ++frames;
+  // Ticks added per update (0, 1, 2, 3+; g_tick_hist), split by tick update
+  // or not: at k*60 fps a tick update should add 1 and any other 0. Also
+  // the presented frames that ran more than one update (the game catching up).
+  auto& hist = g_tick_hist;
+  static uint64_t prev_updates = 0, multi_driver = 0;
+  if (g_updates - prev_updates > 1) ++multi_driver;
+  prev_updates = g_updates;
+  for (int d = 0; d < kDrivers; ++d) {
+    g_driver_hist[d][g_driver_frame[d] < 3 ? g_driver_frame[d] : 3]++;
+    g_driver_frame[d] = 0;
+  }
   const auto now = std::chrono::steady_clock::now();
   const double dt = std::chrono::duration<double>(now - t0).count();
   if (dt >= 5.0) {
     uint32_t ticks;
     std::memcpy(&ticks, B + 0x208F570, 4);
-    std::fprintf(stderr, "[frame_rate] %.1f fps, %.1f ticks/s\n", frames / dt, (ticks - ticks0) / dt);
+    std::fprintf(stderr,
+                 "[frame_rate] %.1f fps, %.1f ticks/s; ticks per update: tick updates %llu/%llu/%llu/%llu, "
+                 "others %llu/%llu/%llu/%llu (0/1/2/3+); frames with 2+ driver calls %llu\n",
+                 frames / dt, (ticks - ticks0) / dt, (unsigned long long)hist[1][0], (unsigned long long)hist[1][1],
+                 (unsigned long long)hist[1][2], (unsigned long long)hist[1][3], (unsigned long long)hist[0][0],
+                 (unsigned long long)hist[0][1], (unsigned long long)hist[0][2], (unsigned long long)hist[0][3],
+                 (unsigned long long)multi_driver);
+    static const char* kName[kDrivers] = {"250540", "2507C0", "250730", "handler 22A770"};
+    for (int d = 0; d < kDrivers; ++d)
+      std::fprintf(stderr, "[frame_rate]   driver %s calls per frame %llu/%llu/%llu/%llu (0/1/2/3+)\n", kName[d],
+                   (unsigned long long)g_driver_hist[d][0], (unsigned long long)g_driver_hist[d][1],
+                   (unsigned long long)g_driver_hist[d][2], (unsigned long long)g_driver_hist[d][3]);
+    std::fprintf(stderr, "[frame_rate]   2507C0 from 22AB88 %llu, 22AC1C %llu, other %llu\n",
+                 (unsigned long long)g_field_pre, (unsigned long long)g_field_loop, (unsigned long long)g_field_other);
+    g_field_pre = g_field_loop = g_field_other = 0;
+    std::fprintf(stderr, "[frame_rate]   limiter %.2f ms per present; frames per present 0/1/2/3+: %llu/%llu/%llu/%llu"
+                 "%c", frames ? g_limiter_ns / 1e6 / frames : 0.0, (unsigned long long)g_limiter_per[0],
+                 (unsigned long long)g_limiter_per[1], (unsigned long long)g_limiter_per[2],
+                 (unsigned long long)g_limiter_per[3], 10);
+    g_limiter_ns = 0;
+    std::memset(g_limiter_per, 0, sizeof g_limiter_per);
+    std::memset(g_driver_hist, 0, sizeof g_driver_hist);
+    std::memset(hist, 0, sizeof hist);
+    multi_driver = 0;
     ticks0 = ticks;
     frames = 0;
     t0 = now;
+  }
+}
+
+// FFXII_TICKLOG=<first frame>,<count>: after each field-driver call, log the
+// driver argument and the per-frame timing state the update leaves behind:
+// 0x1DFE0C0 (30 Hz step flag), 0x1F3DA18 (ticks this frame), the tick
+// counter 0x208F570, [[0x1F82CF0]+0x88] (0x17D930) and [[0x1F82E18]+0x118]
+// (0x181DD0).
+void MaybeTickLog(uint32_t arg) {
+  static const char* e = recomp::Env("TICKLOG");
+  if (!e) return;
+  static uint64_t first = 0, count = 0;
+  static bool parsed = false;
+  if (!parsed) {
+    parsed = true;
+    std::sscanf(e, "%llu,%llu", (unsigned long long*)&first, (unsigned long long*)&count);
+  }
+  uint8_t* B = recomp::g_guest_base;
+  auto rd32 = [&](uint64_t a) { uint32_t v; std::memcpy(&v, B + a, 4); return v; };
+  auto rd64 = [&](uint64_t a) { uint64_t v; std::memcpy(&v, B + a, 8); return v; };
+  const uint64_t o1 = rd64(0x1F82CF0), o2 = rd64(0x1F82E18);
+  const unsigned f88 = o1 ? B[o1 + 0x88] : 255, f118 = o2 ? B[o2 + 0x118] : 255;
+  static uint64_t calls = 0;
+  ++calls;
+  if (g_frames >= first && count) {
+    --count;
+    std::fprintf(stderr, "[ticklog] frame %llu arg %u flag %u n %u ticks %u o88 %u o118 %u\n",
+                 (unsigned long long)g_frames, arg, rd32(0x1DFE0C0), rd32(0x1F3DA18), rd32(0x208F570), f88, f118);
   }
 }
 
@@ -216,7 +461,14 @@ void f_00250540(::recomp::Ctx& c) {
     return;
   }
   ++g_driver_runs;
+  BeginUpdate(kMain);
+  // At k*60 fps only tick updates advance the tick counter (its 0x2505C9 add
+  // takes a register, not 0x184950).
+  const bool hold = HighRate() && !TickFrame();
+  const uint32_t ticks = Ticks();
   f_00250540_lifted(c);
+  if (hold) SetTicks(ticks);
+  CountUpdate(ticks);
 }
 
 // 0x2507C0 is the field driver (called from the frame handlers 0x22A770 and
@@ -229,7 +481,21 @@ void f_002507C0(::recomp::Ctx& c) {
     return;
   }
   ++g_driver_runs;
+  BeginUpdate(kField);
+  {
+    // Which call site in the field handler (0x22AB88 before its step loop,
+    // 0x22AC1C inside it), for the 5 s log.
+    uint64_t ret;
+    std::memcpy(&ret, recomp::g_guest_base + c.rsp, 8);
+    ++(ret == 0x22AB88 ? g_field_pre : ret == 0x22AC1C ? g_field_loop : g_field_other);
+  }
+  const uint32_t arg = uint32_t(c.rcx);
+  const bool hold = HighRate() && !TickFrame();
+  const uint32_t ticks = Ticks();
   f_002507C0_lifted(c);
+  if (hold) SetTicks(ticks);
+  CountUpdate(ticks);
+  MaybeTickLog(arg);
 }
 
 // 0x3820C0 is the scene camera step (reached through 0x36F510 from the frame
@@ -249,6 +515,24 @@ void f_003820C0(::recomp::Ctx& c) {
 // handler 0x22A770 on in-between frames, to see what the render side then
 // presents.
 uint64_t g_handler_skips = 0;
+// 0x22A580 is the frame body (one game frame: the mode handler, update and
+// draw preparation). The frame limiter runs on the render thread, and at
+// k*60 fps it does not hold the game thread to one frame per present (it ran
+// two per present, so twice the game speed: win-sp120b.log). So at k*60 the
+// game thread keeps its own fixed step of 1/(60k) s here, up to 4 frames
+// behind before it drops the backlog.
+void f_0022A580(::recomp::Ctx& c) {
+  if (HighRate()) {
+    static uint64_t next = 0;
+    const uint64_t step = 1000000000ull / uint64_t(60 * SimMult());
+    const uint64_t now = recomp::platform::MonotonicNs();
+    if (next == 0 || now > next + 4 * step) next = now;
+    if (now < next) recomp::platform::SleepUntilNs(next);
+    next += step;
+  }
+  f_0022A580_lifted(c);
+}
+
 void f_0022A770(::recomp::Ctx& c) {
   static const bool on = recomp::Env("SKIP_HANDLER") != nullptr;
   if (on && SkipThisFrame()) {
@@ -256,6 +540,7 @@ void f_0022A770(::recomp::Ctx& c) {
     c.rsp += 8;  // ret
     return;
   }
+  ++g_driver_frame[kHandler];
   f_0022A770_lifted(c);
 }
 
@@ -277,7 +562,13 @@ void f_0060EC80(::recomp::Ctx& c) {
 // 0x250730, the mode-0 tick driver.
 void f_00250730(::recomp::Ctx& c) {
   ++g_calls_250730;
+  BeginUpdate(kMode0);
+  // This driver adds 2 / [0x1DFE0B4] ticks a frame: 1 at 60 fps, but 0 in
+  // integer division at k*60. Add the tick on tick updates instead.
+  const uint32_t ticks = Ticks();
   f_00250730_lifted(c);
+  if (HighRate()) SetTicks(ticks + (TickFrame() ? 1 : 0));
+  CountUpdate(ticks);
 }
 void f_0022B6E0(::recomp::Ctx& c) {
   ++g_calls_22B6E0;
@@ -341,3 +632,7 @@ void f_00259240(::recomp::Ctx& c) {
   }
 }
 }  // namespace recomp::gen
+
+namespace recomp::ffxii {
+uint64_t LimitedFrames() { return recomp::gen::g_frames; }
+}  // namespace recomp::ffxii

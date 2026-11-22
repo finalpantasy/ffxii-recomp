@@ -103,3 +103,16 @@ replace 003820C0
 replace 0022A770
 replace 0060EC80
 replace 0060A410
+replace 00184950
+replace 001EDEC0
+replace 0032AE70
+# 120+ fps instruction fixes (src/frame_rate.cpp FpsHook): `hook` runs
+# ::recomp::Probe before the instruction without splitting the function.
+hook 00519001 fps_518_parity
+hook 00519015 fps_518_restore
+hook 0051B1A5 fps_51B_index
+hook 0051B1CF fps_51B_blend
+replace 0022A580
+hook 0062369C fps_limiter_interval
+hook 001E043A fps_debt_interval
+hook 001E0528 fps_frame_interval
