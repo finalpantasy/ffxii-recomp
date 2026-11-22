@@ -10,6 +10,12 @@
 // Paths match case-insensitively with '/' separators. When several enabled
 // mods carry the same path, the higher priority wins; on equal priority the
 // smaller id wins. Every such clash is recorded as a conflict.
+//
+// Declared relations (mod.ini): "requires = a, b>=1.2" turns the mod off
+// when a required mod is missing, off, or older than the given version; this
+// repeats until nothing changes, so it cascades. "conflicts = c" turns off
+// the lower-ranked mod of each enabled pair (lower priority, then larger id),
+// whichever side declared it. The reason is kept in ModInfo::off_reason.
 
 #include <cstdint>
 #include <string>
@@ -19,12 +25,20 @@
 
 namespace ffxii::mods {
 
+struct Requirement {
+  std::string id;
+  std::string min_version;  // empty: any version
+};
+
 struct ModInfo {
   std::string id;       // unique; defaults to the folder name
   std::string name;     // defaults to id
   std::string version;  // free text
   int priority = 0;     // higher wins
   bool enabled = true;
+  std::vector<Requirement> required;
+  std::vector<std::string> conflicts;  // ids
+  std::string off_reason;  // why Build turned it off (empty: by mod.ini or flag)
   std::string dir;      // host folder holding the files
   size_t files = 0;     // paths this mod supplies (winning or not)
   size_t won = 0;       // paths this mod actually serves
@@ -55,9 +69,14 @@ struct Index {
 std::string Normalize(const std::string& path);
 
 // mod.ini: one "key = value" per line; '#' or ';' start a comment line.
-// Keys: id, name, version, priority (integer), enabled (true/false/1/0).
+// Keys: id, name, version, priority (integer), enabled (true/false/1/0),
+// requires (comma list of id or id>=version), conflicts (comma list of ids).
 // Unknown keys are kept out of ModInfo and reported in `errors`.
 bool ParseModIni(const std::string& text, ModInfo& out, std::vector<std::string>& errors);
+
+// Compares dotted versions numerically ("1.10" > "1.9"; missing parts are 0;
+// a non-numeric part compares as text). Returns <0, 0 or >0.
+int CompareVersions(const std::string& a, const std::string& b);
 
 // Scans `root`. Mods whose id is in `disabled` are listed but not indexed.
 Index Build(const std::string& root, const std::unordered_set<std::string>& disabled = {});

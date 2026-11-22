@@ -60,7 +60,91 @@ void Collect(const fs::path& dir, const fs::path& base, size_t m,
   }
 }
 
+std::vector<std::string> SplitList(const std::string& s) {
+  std::vector<std::string> out;
+  std::string cur;
+  std::istringstream in(s);
+  while (std::getline(in, cur, ',')) {
+    cur = Trim(cur);
+    if (!cur.empty()) out.push_back(cur);
+  }
+  return out;
+}
+
+// Ranking used for path clashes and declared conflicts: true if a beats b.
+bool Ranks(const ModInfo& a, const ModInfo& b) {
+  if (a.priority != b.priority) return a.priority > b.priority;
+  return Lower(a.id) < Lower(b.id);
+}
+
+// Applies conflicts, then requirements until stable. Mods turned off here get
+// an off_reason and an entry in `errors`.
+void ResolveRelations(std::vector<ModInfo>& mods, std::vector<std::string>& errors) {
+  std::map<std::string, size_t> by_id;
+  for (size_t i = 0; i < mods.size(); i++) by_id[Lower(mods[i].id)] = i;
+  auto off = [&](size_t i, const std::string& why) {
+    mods[i].enabled = false;
+    mods[i].off_reason = why;
+    errors.push_back(mods[i].id + ": turned off, " + why);
+  };
+  for (size_t i = 0; i < mods.size(); i++) {
+    for (const auto& other : mods[i].conflicts) {
+      auto it = by_id.find(Lower(other));
+      if (it == by_id.end() || it->second == i) continue;
+      const size_t j = it->second;
+      if (!mods[i].enabled || !mods[j].enabled) continue;
+      const size_t lose = Ranks(mods[i], mods[j]) ? j : i, win = lose == i ? j : i;
+      off(lose, "conflicts with " + mods[win].id);
+    }
+  }
+  for (bool changed = true; changed;) {
+    changed = false;
+    for (size_t i = 0; i < mods.size(); i++) {
+      if (!mods[i].enabled) continue;
+      for (const auto& r : mods[i].required) {
+        auto it = by_id.find(Lower(r.id));
+        std::string why;
+        if (it == by_id.end()) why = "requires " + r.id + ", which is not installed";
+        else if (!mods[it->second].enabled) why = "requires " + r.id + ", which is off";
+        else if (!r.min_version.empty() &&
+                 CompareVersions(mods[it->second].version, r.min_version) < 0)
+          why = "requires " + r.id + " >= " + r.min_version + ", found " +
+                (mods[it->second].version.empty() ? "no version" : mods[it->second].version);
+        if (!why.empty()) {
+          off(i, why);
+          changed = true;
+          break;
+        }
+      }
+    }
+  }
+}
+
 }  // namespace
+
+int CompareVersions(const std::string& a, const std::string& b) {
+  size_t i = 0, j = 0;
+  while (i < a.size() || j < b.size()) {
+    const size_t ei = std::min(a.find('.', i), a.size()), ej = std::min(b.find('.', j), b.size());
+    const std::string pa = i < a.size() ? a.substr(i, ei - i) : "0";
+    const std::string pb = j < b.size() ? b.substr(j, ej - j) : "0";
+    const bool na = !pa.empty() && std::all_of(pa.begin(), pa.end(), [](unsigned char ch) { return std::isdigit(ch) != 0; });
+    const bool nb = !pb.empty() && std::all_of(pb.begin(), pb.end(), [](unsigned char ch) { return std::isdigit(ch) != 0; });
+    int c;
+    if (na && nb) {
+      const unsigned long long va = std::strtoull(pa.c_str(), nullptr, 10);
+      const unsigned long long vb = std::strtoull(pb.c_str(), nullptr, 10);
+      c = va < vb ? -1 : va > vb ? 1 : 0;
+    } else {
+      c = pa.compare(pb);
+      c = c < 0 ? -1 : c > 0 ? 1 : 0;
+    }
+    if (c) return c;
+    i = ei + 1;
+    j = ej + 1;
+  }
+  return 0;
+}
 
 std::string Normalize(const std::string& path) {
   std::string out;
@@ -114,6 +198,21 @@ bool ParseModIni(const std::string& text, ModInfo& out, std::vector<std::string>
         errors.push_back("line " + std::to_string(n) + ": enabled must be true or false");
         ok = false;
       }
+    } else if (key == "requires") {
+      for (const auto& item : SplitList(val)) {
+        Requirement r;
+        const size_t ge = item.find(">=");
+        r.id = Trim(item.substr(0, ge));
+        if (ge != std::string::npos) r.min_version = Trim(item.substr(ge + 2));
+        if (r.id.empty() || (ge != std::string::npos && r.min_version.empty())) {
+          errors.push_back("line " + std::to_string(n) + ": bad requirement '" + item + "'");
+          ok = false;
+          continue;
+        }
+        out.required.push_back(r);
+      }
+    } else if (key == "conflicts") {
+      for (const auto& item : SplitList(val)) out.conflicts.push_back(item);
     } else {
       errors.push_back("line " + std::to_string(n) + ": unknown key '" + key + "'");
     }
@@ -156,6 +255,7 @@ Index Build(const std::string& root_s, const std::unordered_set<std::string>& di
     m.dir = Utf8(d / "files");
     ix.mods.push_back(m);
   }
+  ResolveRelations(ix.mods, ix.errors);
 
   std::map<std::string, std::vector<std::pair<size_t, std::string>>> cand;
   for (size_t i = 0; i < ix.mods.size(); i++) {
@@ -181,9 +281,7 @@ Index Build(const std::string& root_s, const std::unordered_set<std::string>& di
 
   for (auto& [path, list] : cand) {
     auto better = [&](const auto& a, const auto& b) {
-      const ModInfo &ma = ix.mods[a.first], &mb = ix.mods[b.first];
-      if (ma.priority != mb.priority) return ma.priority > mb.priority;
-      return Lower(ma.id) < Lower(mb.id);
+      return Ranks(ix.mods[a.first], ix.mods[b.first]);
     };
     std::stable_sort(list.begin(), list.end(), better);
     // One mod may hold two spellings of a path ("A.tga", "a.tga"): first wins.
@@ -218,7 +316,9 @@ std::string Index::Report() const {
     o << (m.enabled ? "  [on]  " : "  [off] ") << m.id;
     if (m.name != m.id) o << " (" << m.name << ")";
     if (!m.version.empty()) o << " " << m.version;
-    o << "  priority " << m.priority << ", " << m.won << " of " << m.files << " files\n";
+    o << "  priority " << m.priority << ", " << m.won << " of " << m.files << " files";
+    if (!m.off_reason.empty()) o << "  (" << m.off_reason << ")";
+    o << "\n";
   }
   for (const auto& c : conflicts) {
     o << "  conflict " << c.path << ": " << c.winner << " over";

@@ -92,6 +92,65 @@ int main() {
   CHECK(rep.find("conflict gamedata/a.bin: beta over alpha") != std::string::npos);
   std::fputs(rep.c_str(), stdout);
 
+  // Versions compare per dotted part, numerically.
+  CHECK(CompareVersions("1.10", "1.9") > 0);
+  CHECK(CompareVersions("2", "2.0.0") == 0);
+  CHECK(CompareVersions("1.2", "1.2.1") < 0);
+  CHECK(CompareVersions("1.0b", "1.0a") > 0);
+
+  {
+    ModInfo m;
+    std::vector<std::string> errs;
+    CHECK(ParseModIni("requires = base, lib >= 1.2\nconflicts = old, other\n", m, errs));
+    CHECK(errs.empty() && m.required.size() == 2 && m.conflicts.size() == 2);
+    CHECK(m.required[1].id == "lib" && m.required[1].min_version == "1.2");
+    errs.clear();
+    CHECK(!ParseModIni("requires = >=1\n", m, errs));
+  }
+
+  // Declared relations: requirements cascade, versions are checked, and the
+  // lower-ranked side of a declared conflict is turned off.
+  const fs::path rel = fs::temp_directory_path() / "ffxii_mod_index_rel";
+  fs::remove_all(rel);
+  Put(rel / "base/mod.ini", "id = base\nversion = 1.10\n");
+  Put(rel / "base/files/x.bin", "base-x");
+  Put(rel / "addon/mod.ini", "id = addon\nrequires = base >= 1.9\n");
+  Put(rel / "addon/files/y.bin", "addon-y");
+  Put(rel / "needsnew/mod.ini", "id = needsnew\nrequires = base >= 2\n");
+  Put(rel / "needsnew/files/z.bin", "needsnew-z");
+  Put(rel / "chain/mod.ini", "id = chain\nrequires = needsnew\n");
+  Put(rel / "chain/files/w.bin", "chain-w");
+  Put(rel / "ghost/mod.ini", "id = ghost\nrequires = absent\n");
+  Put(rel / "hi/mod.ini", "id = hi\npriority = 3\n");
+  Put(rel / "hi/files/x.bin", "hi-x");
+  Put(rel / "lo/mod.ini", "id = lo\nconflicts = hi\n");
+  Put(rel / "lo/files/v.bin", "lo-v");
+  Index rx = Build(rel.string());
+  auto mod = [&](const std::string& id) -> const ModInfo* {
+    for (const auto& m : rx.mods)
+      if (m.id == id) return &m;
+    return nullptr;
+  };
+  CHECK(mod("addon") && mod("addon")->enabled);
+  CHECK(rx.Find("y.bin"));
+  CHECK(mod("needsnew") && !mod("needsnew")->enabled);
+  CHECK(mod("needsnew")->off_reason.find(">= 2") != std::string::npos);
+  CHECK(mod("chain") && !mod("chain")->enabled);  // cascades from needsnew
+  CHECK(!rx.Find("z.bin") && !rx.Find("w.bin"));
+  CHECK(mod("ghost") && !mod("ghost")->enabled);
+  CHECK(mod("lo") && !mod("lo")->enabled && mod("hi")->enabled);
+  CHECK(!rx.Find("v.bin"));
+  const Entry* x = rx.Find("x.bin");
+  CHECK(x && Slurp(x->host) == "hi-x");
+  CHECK(rx.errors.size() == 4);
+  // Turning hi off by flag lets lo run.
+  Index rx2 = Build(rel.string(), {"hi"});
+  CHECK(rx2.Find("v.bin"));
+  const std::string rrep = rx.Report();
+  CHECK(rrep.find("(conflicts with hi)") != std::string::npos);
+  std::fputs(rrep.c_str(), stdout);
+  fs::remove_all(rel);
+
   // No root folder: empty index.
   CHECK(Build((root / "missing").string()).files.empty());
 
