@@ -154,6 +154,26 @@ int main() {
   // No root folder: empty index.
   CHECK(Build((root / "missing").string()).files.empty());
 
+  // TreeSignature: changes on add, rewrite and remove; ignores the report.
+  {
+    const fs::path w = root / "watch";
+    fs::create_directories(w);
+    const uint64_t s0 = TreeSignature(w.string());
+    CHECK(s0 != 0);
+    Put(w / "m" / "files" / "a.bin", "1");
+    const uint64_t s1 = TreeSignature(w.string());
+    CHECK(s1 != s0);
+    CHECK(TreeSignature(w.string()) == s1);
+    Put(w / "mods-report.txt", "report");
+    CHECK(TreeSignature(w.string()) == s1);
+    Put(w / "m" / "files" / "a.bin", "22");
+    const uint64_t s2 = TreeSignature(w.string());
+    CHECK(s2 != s1);
+    fs::remove(w / "m" / "files" / "a.bin");
+    CHECK(TreeSignature(w.string()) != s2);
+    CHECK(TreeSignature((root / "missing").string()) == 0);
+  }
+
   fs::remove_all(root);
   std::printf("%s\n", g_fail ? "FAILED" : "ok");
   return g_fail ? 1 : 0;

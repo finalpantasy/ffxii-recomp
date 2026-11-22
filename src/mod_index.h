@@ -81,4 +81,9 @@ int CompareVersions(const std::string& a, const std::string& b);
 // Scans `root`. Mods whose id is in `disabled` are listed but not indexed.
 Index Build(const std::string& root, const std::unordered_set<std::string>& disabled = {});
 
+// A hash of every file under `root` (relative path, size, modification
+// time), mods-report.txt excepted: it changes when a mod file is added,
+// removed, renamed or rewritten. 0 when `root` is missing.
+uint64_t TreeSignature(const std::string& root);
+
 }  // namespace ffxii::mods

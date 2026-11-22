@@ -10,7 +10,8 @@ namespace {
 
 void Usage() {
   std::cerr << "usage: ffxii_recomp --game-dir PATH [--exe PATH] [--exact-sse-flags]\n"
-               "         [--mods-dir PATH] [--mods-disable ID,ID] [--mods-log]\n"
+               "         [--mods-dir PATH] [--mods-disable ID,ID] [--mods-log] [--mods-watch]\n"
+               "  --mods-watch      reload the mods folder when its files change\n"
                "         [--interp] [--interp-no-pace] [--interp-t T] [-- ARGS...]\n"
                "  --interp          show a blended frame between each two game frames\n"
                "                    (60 Hz game logic, twice the presented frame rate)\n"
@@ -53,6 +54,8 @@ int main(int argc, char** argv) {
       SetSwitch("FFXII_MODS_DISABLE", argv[++i]);
     } else if (arg == "--mods-log") {
       SetSwitch("FFXII_MODS_LOG", "1");
+    } else if (arg == "--mods-watch") {
+      SetSwitch("FFXII_MODS_WATCH", "1");
     } else if (arg == "--interp") {
       // SwARc d3d11.cpp/dxgi.cpp: record each frame on deferred contexts and
       // present a blended copy before it.

@@ -12,12 +12,14 @@
 //   00215110 Read(reader, dst, len) -> bytes read; does not move the position
 //   002150D0 Release(reader): hands the reader back to its archive
 
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -91,6 +93,52 @@ uint64_t FileSize(std::FILE* f) {
 #endif
 }
 
+// Scans g_root, logs the report and writes mods-report.txt.
+ffxii::mods::Index BuildIndex() {
+  std::unordered_set<std::string> off;
+  if (const char* d = recomp::Env("MODS_DISABLE")) {
+    std::string list = d;
+    for (size_t a = 0; a <= list.size();) {
+      size_t b = list.find(',', a);
+      if (b == std::string::npos) b = list.size();
+      if (b > a) off.insert(list.substr(a, b - a));
+      a = b + 1;
+    }
+  }
+  ffxii::mods::Index index = ffxii::mods::Build(g_root, off);
+  const std::string rep = index.Report();
+  std::fprintf(stderr, "[mods] %s\n%s", g_root.c_str(), rep.c_str());
+  if (std::FILE* f = std::fopen((g_root + "/mods-report.txt").c_str(), "wb")) {
+    std::fputs(rep.c_str(), f);
+    std::fclose(f);
+  }
+  return index;
+}
+
+// FFXII_MODS_WATCH (--mods-watch): checks the mods folder once a second and
+// rebuilds the index after a change, so a file the game opens from then on
+// comes from the new set. Files already open keep reading what they opened.
+void WatchLoop() {
+  uint64_t seen = ffxii::mods::TreeSignature(g_root);
+  for (;;) {
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+    uint64_t now = ffxii::mods::TreeSignature(g_root);
+    if (now == seen) continue;
+    // Wait until a copy in progress settles.
+    for (int i = 0; i < 10; ++i) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(300));
+      const uint64_t again = ffxii::mods::TreeSignature(g_root);
+      if (again == now) break;
+      now = again;
+    }
+    seen = now;
+    std::fprintf(stderr, "[mods] change in %s; reloading\n", g_root.c_str());
+    ffxii::mods::Index index = BuildIndex();
+    std::lock_guard lock(g_mu);
+    g_index = std::move(index);
+  }
+}
+
 // Called with g_mu held.
 bool Init() {
   if (g_root_set) return g_enabled;
@@ -105,24 +153,10 @@ bool Init() {
     std::fprintf(stderr, "[mods] no folder %s\n", g_root.c_str());
     return g_enabled = false;
   }
-  std::unordered_set<std::string> off;
-  if (const char* d = recomp::Env("MODS_DISABLE")) {
-    std::string list = d;
-    for (size_t a = 0; a <= list.size();) {
-      size_t b = list.find(',', a);
-      if (b == std::string::npos) b = list.size();
-      if (b > a) off.insert(list.substr(a, b - a));
-      a = b + 1;
-    }
-  }
-  g_index = ffxii::mods::Build(g_root, off);
-  const std::string rep = g_index.Report();
-  std::fprintf(stderr, "[mods] %s\n%s", g_root.c_str(), rep.c_str());
-  if (std::FILE* f = std::fopen((g_root + "/mods-report.txt").c_str(), "wb")) {
-    std::fputs(rep.c_str(), f);
-    std::fclose(f);
-  }
-  g_enabled = !g_index.files.empty() || recomp::Env("MODS_LOG") != nullptr;
+  g_index = BuildIndex();
+  static const bool watch = recomp::Env("MODS_WATCH") != nullptr;
+  if (watch) std::thread(WatchLoop).detach();
+  g_enabled = watch || !g_index.files.empty() || recomp::Env("MODS_LOG") != nullptr;
   return g_enabled;
 }
 

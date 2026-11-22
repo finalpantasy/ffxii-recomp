@@ -329,4 +329,28 @@ std::string Index::Report() const {
   return o.str();
 }
 
+uint64_t TreeSignature(const std::string& root_s) {
+  std::error_code ec;
+  const fs::path root = fs::u8path(root_s);
+  if (!fs::is_directory(root, ec)) return 0;
+  // Sorted, so the order the directory lists files in does not matter.
+  std::vector<std::string> rows;
+  for (fs::recursive_directory_iterator it(root, fs::directory_options::skip_permission_denied, ec), end;
+       !ec && it != end; it.increment(ec)) {
+    if (!it->is_regular_file(ec)) continue;
+    const std::string rel = it->path().lexically_relative(root).generic_string();
+    if (rel == "mods-report.txt") continue;
+    const uintmax_t size = it->file_size(ec);
+    const auto mtime = it->last_write_time(ec).time_since_epoch().count();
+    rows.push_back(rel + '\n' + std::to_string(size) + '\n' + std::to_string(mtime));
+  }
+  std::sort(rows.begin(), rows.end());
+  uint64_t h = 1469598103934665603ull;  // FNV-1a
+  for (const auto& r : rows) {
+    for (unsigned char ch : r) h = (h ^ ch) * 1099511628211ull;
+    h = (h ^ 0xFF) * 1099511628211ull;
+  }
+  return h | 1;  // never 0
+}
+
 }  // namespace ffxii::mods
