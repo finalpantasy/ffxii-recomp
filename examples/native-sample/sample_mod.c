@@ -27,9 +27,12 @@ static void Count(int i, ffxii_cpu* cpu) {
   long long p = 1;
   while (p < n) p *= 10;
   if (p == n) {
-    char msg[96];
-    snprintf(msg, sizeof msg, "%08llX call %lld (rcx %llX)", (unsigned long long)g_va[i], n,
-             (unsigned long long)g_api->reg(cpu, FFXII_RCX));
+    char msg[128];
+    uint64_t ret;
+    memcpy(&ret, g_api->guest_ptr(g_api->reg(cpu, FFXII_RSP)), 8);
+    snprintf(msg, sizeof msg, "%08llX call %lld (rcx %llX, returns to %08llX)",
+             (unsigned long long)g_va[i], n, (unsigned long long)g_api->reg(cpu, FFXII_RCX),
+             (unsigned long long)ret);
     g_api->log(g_api, msg);
   }
   g_orig[i](cpu);

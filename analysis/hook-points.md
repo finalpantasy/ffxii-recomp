@@ -40,7 +40,26 @@ generated/full analysis/maps/functions.tsv --callee 244F50` lists them; with
 0x245000, a variant, there are 292 call sites and 202 distinct handlers. 47
 of the 202 appear in the census above, so task handlers run through the
 dispatcher. A native module can therefore hook every task's per-frame
-logic. The scheduler that calls them has not been located yet.
+logic.
+
+Handlers take messages: `handler(task* rcx, msg* rdx)`. A hook on 15
+handlers logged the return address of their 1st, 10th, 100th, ... calls
+(`examples/native-sample` reads [rsp]; `win-task2.log`) and found these
+call sites:
+- 0x24674A, in the init 0x2465F0: the first call, at creation, with a
+  message built on the stack.
+- 0x2480FB, in the task-list runner 0x248030, `call [rbx]` with
+  rdx = 0x915108: the per-tick update. The runner is described in
+  `frame-timing.md`: it walks one task tree once per frame, using the
+  parity bit 17 of +0x40, and the drivers 0x250540 and 0x2507C0 run it on
+  the lists at 0x208EA20-0x208EA50. Bit 18 of +0x40 skips the handler, and
+  bit 10 takes the 0x2482E0 path instead.
+- 0x24635C and 0x2462D2, in 0x245E60 (called from 0x2450D2, 0x245132 and
+  0x24637A), and 0x246C53, in 0x246C20 (called from 0x2449A9): other
+  messages, not yet decoded.
+
+So a hook on a handler sees its creation, every tick and the other
+messages, and it can tell them apart by rdx.
 
 ## Lua
 
