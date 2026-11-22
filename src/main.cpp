@@ -9,7 +9,18 @@
 namespace {
 
 void Usage() {
-  std::cerr << "usage: ffxii_recomp --game-dir PATH [--exe PATH] [--exact-sse-flags] [-- ARGS...]\n";
+  std::cerr << "usage: ffxii_recomp --game-dir PATH [--exe PATH] [--exact-sse-flags]\n"
+               "         [--mods-dir PATH] [--mods-disable ID,ID] [--mods-log] [-- ARGS...]\n";
+}
+
+// The mod loader reads FFXII_MODS_* (src/mods.cpp); a flag sets the same
+// variable so launchers need no environment.
+void SetSwitch(const char* name, const std::string& value) {
+#ifdef _WIN32
+  _putenv_s(name, value.c_str());
+#else
+  setenv(name, value.c_str(), 1);
+#endif
 }
 
 }  // namespace
@@ -31,6 +42,12 @@ int main(int argc, char** argv) {
       exe = argv[++i];
     } else if (arg == "--exact-sse-flags") {
       exact_flags = true;
+    } else if (arg == "--mods-dir" && i + 1 < argc) {
+      SetSwitch("FFXII_MODS_DIR", argv[++i]);
+    } else if (arg == "--mods-disable" && i + 1 < argc) {
+      SetSwitch("FFXII_MODS_DISABLE", argv[++i]);
+    } else if (arg == "--mods-log") {
+      SetSwitch("FFXII_MODS_LOG", "1");
     } else if (arg == "--") {
       for (int j = i + 1; j < argc; j++) {
         if (!game_args.empty()) game_args += ' ';
