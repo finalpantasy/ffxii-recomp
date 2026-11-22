@@ -1,4 +1,4 @@
-// Write watch (FFXII_WATCH=<guest hex addr>[,<len hex>], Windows hosts).
+// Write watch (FFXII_WATCH=<guest hex addr>[,<len hex>[,<start frame dec>]], Windows hosts).
 // Makes the guest page read-only; every write to it faults into a vectored
 // handler, which logs each distinct host RIP that writes inside
 // [addr, addr+len) (default len 0x80), lets the write through with the trap
@@ -16,6 +16,10 @@
 #include "runtime/env.h"
 #include "x86/lifted.h"
 #include "x86/runtime.h"
+
+namespace recomp::ffxii {
+extern bool g_skip_frame;
+}
 
 namespace {
 
@@ -38,11 +42,13 @@ LONG CALLBACK OnException(EXCEPTION_POINTERS* e) {
     if (a >= g_lo && a < g_hi) {
       const uintptr_t rip = e->ContextRecord->Rip;
       AcquireSRWLockExclusive(&g_lock);
-      const bool fresh = g_seen->insert(rip).second;
+      const bool skip = recomp::ffxii::g_skip_frame;
+      const bool fresh = g_seen->insert(rip * 2 + skip).second;
       ReleaseSRWLockExclusive(&g_lock);
       if (fresh)
-        std::fprintf(stderr, "[watch] write +0x%llx from host rip 0x%llx\n",
-                     (unsigned long long)(a - g_lo), (unsigned long long)rip);
+        std::fprintf(stderr, "[watch] write +0x%llx from host rip 0x%llx%s\n",
+                     (unsigned long long)(a - g_lo), (unsigned long long)rip,
+                     skip ? " (driver-skipped frame)" : "");
     }
     Protect(PAGE_READWRITE);
     t_stepping = true;
@@ -61,15 +67,23 @@ LONG CALLBACK OnException(EXCEPTION_POINTERS* e) {
 
 namespace recomp::ffxii {
 
-// Called once guest memory exists (from the frame limiter wrapper).
-void MaybeStartWatch() {
+// Called every limited frame (from the frame limiter wrapper); arms the watch
+// on the start frame (default 1).
+void MaybeStartWatch(uint64_t frame) {
   static bool done = false;
   if (done) return;
-  done = true;
   const char* e = recomp::Env("WATCH");
-  if (!e) return;
-  unsigned long long addr = 0, len = 0x80;
-  if (std::sscanf(e, "%llx,%llx", &addr, &len) < 1) return;
+  if (!e) {
+    done = true;
+    return;
+  }
+  unsigned long long addr = 0, len = 0x80, start = 1;
+  if (std::sscanf(e, "%llx,%llx,%llu", &addr, &len, &start) < 1) {
+    done = true;
+    return;
+  }
+  if (frame < start) return;
+  done = true;
   g_lo = reinterpret_cast<uintptr_t>(recomp::g_guest_base) + addr;
   g_hi = g_lo + len;
   g_page = g_lo & ~uintptr_t(4095);
@@ -82,7 +96,8 @@ void MaybeStartWatch() {
 
 }  // namespace recomp::ffxii
 #else
+#include <cstdint>
 namespace recomp::ffxii {
-void MaybeStartWatch() {}
+void MaybeStartWatch(uint64_t) {}
 }  // namespace recomp::ffxii
 #endif

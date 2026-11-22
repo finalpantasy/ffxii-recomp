@@ -131,6 +131,24 @@ Method: `FFXII_SNAP=start,count,interval` (src/frame_rate.cpp) writes `.data` sn
   - The main list had 42 tasks in `win-tasks3.log` and 19 in `win-tasks4.log`; the other three lists had 1 each.
   - No task callback reaches 0x3820C0 through direct calls, so the scene camera runs from the mode handlers, not from tasks.
 - `tools/callgraph.py` answers direct-call reachability questions over the lifted code.
-- Next:
-  1. Log 0x259240's mode during field play and battle, to see which handler draws the field.
-  2. Within that handler, separate the update calls from the draw calls. An in-between frame then repeats only the draw part, with the blended camera written by a wrapper on 0x3820C0.
+- Correction (2026-11-22): 0x259240 has callers besides the frame body, so `FFXII_MODE_LOG` (which logs the byte at 0x2064AD3 after every 0x259240 call) does not show the handler in use. Call counters (`FFXII_CAMLOG=1` prints them) show the real split: 0x22B6E0 runs for the first 87-138 frames, 0x22B8C0 for a few hundred more during loading, and neither runs in the field.
+
+## Field frame (2026-11-22)
+
+- The field handler is 0x22A770 (the default case of the frame body switch).
+- Its driver is **0x2507C0**, not 0x250540. Callers: 0x22AB83 and 0x22AC17 in 0x22A770, and 0x22B832 in 0x22B7E0. Found with the write watch on the tick counter, armed after the field loads (`FFXII_WATCH=208F570,4,4500`; the third field is the start frame).
+  - It sets 0x2092748, calls the update 0x184960 with n = 1 or 2 (from 0x17D930), adds 0x184950() to the tick counter 0x208F570, runs the four task lists 0x208EA28, 0x208EA40, 0x208EA48 and 0x208EA50 (0x248030, then 0x244970 on each), and tail-calls 0x228930. With n = 1 it also calls 0x254CC0 and 0x367200.
+  - 0x250730 is the same kind of driver for 0x22B6E0 (two task lists, ticks += 2 / [0x1DFE0B4]).
+- The camera moves outside the driver. The camera transform at 0x20975A0 is written by 0x3CBD60 (through 0x3CC000 from 0x3829D0 and 0x259820), by 0x3CC080 (from 0x3D9150, 0x258350 and others) and by 0x3CBCA0 and 0x202E10, along several paths from 0x22A770 each frame. 0x3820C0 is only one of them.
+
+### Experiment 3: 120 fps with the driver on tick frames only (`FFXII_SKIP_DRIVER=2`)
+
+- The limiter runs at 1/120 s. A wall-clock accumulator decides once per frame whether a 1/60 s tick is due; on other frames the wrappers on 0x250540 and 0x2507C0 return at once (popping the return address: a `replace` wrapper that skips the lifted body must do `c.rsp += 8`).
+- Ticks then follow wall time (about 60 a second while frames run faster). The first version skipped every other frame instead and ran the game at 75% speed when frames fell to 89 fps (`win-spd5.log`).
+- The camera does not follow: `FFXII_CAMLOG` sums the yaw change separately for frames that ran or skipped the driver, and the right-stick turn was as large on skipped frames as on driver frames (`win-spd7.log`: 2.3 against 2.6 degrees per frame). At about 118 fps it turned at about 290 degrees a second against 150 at 60 fps. Holding 0x3820C0 to tick frames too did not stop it (`win-spd8.log`), because of the other camera paths above.
+- `FFXII_SKIP_HANDLER=1` skips the whole of 0x22A770 on in-between frames. Those frames are then exact repeats with no black or broken images (`win-spd9.log`; consecutive dumps differ by 0.0).
+- The render thread draws once per game frame, not per present: the render packet consumer 0x60EC80 (called from 0x608DD0 and 0x608F20, it runs 0x629970) ran about 394 times per tick and 239 per presented frame with the handler skipped, against 330-600 per frame at 60 fps (`win-spd10.log`, `win-spd11.log`). So an in-between frame is presented again, not drawn again.
+
+Conclusion: 120 fps output needs the render thread to draw the last frame's packets a second time with a blended camera. Holding the game thread to 60 Hz is easy (skip 0x22A770), and the images stay clean. The open work is on the render side:
+1. Find where the view and projection enter the packets: a per-view constant buffer (then a blended camera can be written there) or per-object matrices built on the game thread (then the blend must go through the packet build).
+2. Make the render thread re-run its submission (0x608DD0/0x608F20) for the last packet buffer on an in-between frame.

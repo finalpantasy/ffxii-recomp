@@ -9,8 +9,18 @@
 // those constants to turn the 60 Hz tick count into seconds, so the wrapper
 // divides them by k only while the limiter runs. It also logs, once a
 // second, the 1/60 s tick counter 0x208F570 (60 per second = real speed).
+//
+// Measurement switches (analysis/frame-timing.md, experiment 3):
+//   FFXII_SKIP_DRIVER=k   limiter at 1/(60k) s; the drivers 0x250540 and
+//                         0x2507C0 and the camera step 0x3820C0 run only when a
+//                         1/60 s tick of wall time is due.
+//   FFXII_SKIP_HANDLER=1  also skip the field handler 0x22A770 on other frames.
+//   FFXII_CAMLOG=1        log ticks, call counters and the camera twice a second.
+//   FFXII_MODE_LOG=1      log the byte 0x2064AD3 after 0x259240 (not frame-only).
 
+#include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -24,13 +34,23 @@
 #include "x86/runtime.h"
 
 namespace recomp::ffxii {
-void MaybeStartWatch();
+void MaybeStartWatch(uint64_t frame);
+bool g_skip_frame = false;  // this frame skips the driver (FFXII_SKIP_DRIVER)
 }
 
 namespace recomp::gen {
 void f_001EDDC0_lifted(::recomp::Ctx& c);
 void f_006234A0_lifted(::recomp::Ctx& c);
 void f_00248030_lifted(::recomp::Ctx& c);
+void f_00259240_lifted(::recomp::Ctx& c);
+void f_00250540_lifted(::recomp::Ctx& c);
+void f_00250730_lifted(::recomp::Ctx& c);
+void f_002507C0_lifted(::recomp::Ctx& c);
+void f_003820C0_lifted(::recomp::Ctx& c);
+void f_0022A770_lifted(::recomp::Ctx& c);
+void f_0060EC80_lifted(::recomp::Ctx& c);
+void f_0022B6E0_lifted(::recomp::Ctx& c);
+void f_0022B8C0_lifted(::recomp::Ctx& c);
 
 namespace {
 int SimMult() {
@@ -39,6 +59,77 @@ int SimMult() {
     return e ? std::atoi(e) : 1;
   }();
   return k;
+}
+// FFXII_SKIP_DRIVER=k: the limiter runs k times per 1/60 s, and the per-frame
+// driver 0x250540 (update and task lists) runs on every k-th frame only.
+int SkipDriver() {
+  static const int k = [] {
+    const char* e = recomp::Env("SKIP_DRIVER");
+    return e ? std::atoi(e) : 1;
+  }();
+  return k;
+}
+int LimitDiv() { return SimMult() > SkipDriver() ? SimMult() : SkipDriver(); }
+uint64_t g_frames = 0;  // limited frames so far
+
+// With FFXII_SKIP_DRIVER=k > 1, a driver call runs only when a 1/60 s tick of
+// wall time is due (fixed-step accumulator, at most 4 ticks behind), so the
+// game advances at real speed at any frame rate. Decided once per frame.
+bool SkipThisFrame() {
+  if (SkipDriver() <= 1) return false;
+  using clock = std::chrono::steady_clock;
+  static uint64_t decided = ~0ull;
+  static bool skip = false;
+  static clock::time_point next = clock::now();
+  if (decided == g_frames) return skip;
+  decided = g_frames;
+  const auto now = clock::now();
+  const auto tick = std::chrono::nanoseconds(16666667);
+  if (now < next) {
+    skip = true;
+  } else {
+    skip = false;
+    next += tick;
+    if (now - next > 4 * tick) next = now;
+  }
+  recomp::ffxii::g_skip_frame = skip;
+  return skip;
+}
+uint64_t g_driver_runs = 0, g_driver_skips = 0;
+std::atomic<uint64_t> g_render_calls{0};  // 0x60EC80, render thread
+uint64_t g_calls_250730 = 0, g_calls_22B6E0 = 0, g_calls_22B8C0 = 0;
+
+// FFXII_CAMLOG=1: twice a second, log the tick counter, the camera position
+// and yaw (camera world transform at 0x20975A0), to measure game speed.
+void MaybeCamLog() {
+  static const bool on = recomp::Env("CAMLOG") != nullptr;
+  if (!on) return;
+  static auto t0 = std::chrono::steady_clock::now();
+  static double next = 0;
+  float m[16];
+  std::memcpy(m, recomp::g_guest_base + 0x20975A0, sizeof m);
+  // Yaw change per frame, summed by whether the frame that just ended ran
+  // the driver (run) or skipped it (skip, FFXII_SKIP_DRIVER only).
+  static float prev_yaw = 0;
+  static double turn_run = 0, turn_skip = 0;
+  static uint64_t skips_seen = 0;
+  const float yaw = std::atan2(m[8], m[10]) * 57.29578f;
+  float dy = yaw - prev_yaw;
+  while (dy > 180) dy -= 360;
+  while (dy < -180) dy += 360;
+  prev_yaw = yaw;
+  (g_driver_skips != skips_seen ? turn_skip : turn_run) += std::fabs(dy);
+  skips_seen = g_driver_skips;
+  const double t = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+  if (t < next) return;
+  next = t + 0.5;
+  uint32_t ticks;
+  std::memcpy(&ticks, recomp::g_guest_base + 0x208F570, 4);
+  std::fprintf(stderr, "[cam] t %.2f rend %llu h0 %llu h2 %llu tk %llu drv %llu/%llu frame %llu ticks %u pos %.3f %.3f %.3f yaw %.2f turn %.1f/%.1f\n", t,
+               (unsigned long long)g_render_calls.load(), (unsigned long long)g_calls_22B6E0, (unsigned long long)g_calls_22B8C0,
+               (unsigned long long)g_calls_250730, (unsigned long long)g_driver_runs, (unsigned long long)g_driver_skips,
+               (unsigned long long)g_frames, ticks, m[12], m[13], m[14],
+               yaw, turn_run, turn_skip);
 }
 }  // namespace
 
@@ -83,8 +174,10 @@ void MaybeSnap() {
 
 void f_006234A0(::recomp::Ctx& c) {
   MaybeSnap();
-  recomp::ffxii::MaybeStartWatch();
-  const int k = SimMult();
+  ++g_frames;
+  recomp::ffxii::MaybeStartWatch(g_frames);
+  MaybeCamLog();
+  const int k = LimitDiv();
   if (k <= 1) return f_006234A0_lifted(c);
   uint8_t* B = recomp::g_guest_base;
   static double a, b;  // original constants, read once
@@ -109,6 +202,77 @@ void f_006234A0(::recomp::Ctx& c) {
     frames = 0;
     t0 = now;
   }
+}
+
+void f_00250540(::recomp::Ctx& c) {
+  if (SkipThisFrame()) {
+    ++g_driver_skips;
+    c.rsp += 8;  // ret
+    return;
+  }
+  ++g_driver_runs;
+  f_00250540_lifted(c);
+}
+
+// 0x2507C0 is the field driver (called from the frame handlers 0x22A770 and
+// 0x22B7E0): update 0x184960, the tick add, four task lists, then 0x367200.
+// FFXII_SKIP_DRIVER skips it the same way.
+void f_002507C0(::recomp::Ctx& c) {
+  if (SkipThisFrame()) {
+    ++g_driver_skips;
+    c.rsp += 8;  // ret
+    return;
+  }
+  ++g_driver_runs;
+  f_002507C0_lifted(c);
+}
+
+// 0x3820C0 is the scene camera step (reached through 0x36F510 from the frame
+// handlers, once per rendered frame, outside the driver). It reads the
+// camera stick, so with FFXII_SKIP_DRIVER it also runs on tick frames only.
+uint64_t g_camera_skips = 0;
+void f_003820C0(::recomp::Ctx& c) {
+  if (SkipThisFrame()) {
+    ++g_camera_skips;
+    c.rsp += 8;  // ret
+    return;
+  }
+  f_003820C0_lifted(c);
+}
+
+// FFXII_SKIP_HANDLER=1 (with FFXII_SKIP_DRIVER): skip the whole field frame
+// handler 0x22A770 on in-between frames, to see what the render side then
+// presents.
+uint64_t g_handler_skips = 0;
+void f_0022A770(::recomp::Ctx& c) {
+  static const bool on = recomp::Env("SKIP_HANDLER") != nullptr;
+  if (on && SkipThisFrame()) {
+    ++g_handler_skips;
+    c.rsp += 8;  // ret
+    return;
+  }
+  f_0022A770_lifted(c);
+}
+
+// 0x60EC80 runs the render packet consumer 0x629970 (render thread).
+void f_0060EC80(::recomp::Ctx& c) {
+  g_render_calls.fetch_add(1, std::memory_order_relaxed);
+  f_0060EC80_lifted(c);
+}
+
+// Call counters for the camera log: frame handlers for modes 0 and 2, and
+// 0x250730, the mode-0 tick driver.
+void f_00250730(::recomp::Ctx& c) {
+  ++g_calls_250730;
+  f_00250730_lifted(c);
+}
+void f_0022B6E0(::recomp::Ctx& c) {
+  ++g_calls_22B6E0;
+  f_0022B6E0_lifted(c);
+}
+void f_0022B8C0(::recomp::Ctx& c) {
+  ++g_calls_22B8C0;
+  f_0022B8C0_lifted(c);
 }
 
 // FFXII_TASKS=<call>[,<call>...]: on those calls of the task runner 0x248030 per list
@@ -145,5 +309,22 @@ void f_00248030(::recomp::Ctx& c) {
     }
   }
   f_00248030_lifted(c);
+}
+
+// The frame body 0x22A580 calls 0x259240, then switches on the signed byte
+// at 0x2064AD3 (cases 0-6). FFXII_MODE_LOG=1 logs each change of that byte
+// with the call count.
+void f_00259240(::recomp::Ctx& c) {
+  f_00259240_lifted(c);
+  static const bool on = recomp::Env("MODE_LOG") != nullptr;
+  if (!on) return;
+  static uint32_t prev = ~0u;
+  static uint64_t calls = 0;
+  ++calls;
+  const uint32_t mode = uint32_t(int32_t(int8_t(recomp::g_guest_base[0x2064AD3])));
+  if (mode != prev) {
+    prev = mode;
+    std::fprintf(stderr, "[mode] %u at call %llu\n",prev, (unsigned long long)calls);
+  }
 }
 }  // namespace recomp::gen

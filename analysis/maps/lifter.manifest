@@ -73,3 +73,12 @@ crt 00861EC0 memset
 replace 001EDDC0
 replace 006234A0
 replace 00248030
+replace 00259240
+replace 00250540
+replace 00250730
+replace 0022B6E0
+replace 0022B8C0
+replace 002507C0
+replace 003820C0
+replace 0022A770
+replace 0060EC80
