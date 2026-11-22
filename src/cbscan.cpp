@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <mutex>
@@ -50,7 +51,32 @@ bool Near3(const float* a, const float* b) {
   return true;
 }
 
+// FFXII_CBSCAN_DUMP=<frame>: from that frame on, append the first 64 uploads
+// each of 928 and 8864 bytes to cbdump.bin as records of
+// [u32 size][64 floats: view 0x2097560, then camera 0x20975A0, 0x2AED580 copy
+// and 0x2AED5C0][data].
+uint64_t g_dump_from = ~0ull;
+int g_dumped[2] = {0, 0};
+FILE* g_dump = nullptr;
+
+void MaybeDump(const void* data, size_t size) {
+  const int k = size == 928 ? 0 : size == 8864 ? 1 : -1;
+  if (k < 0 || g_frames < g_dump_from || g_dumped[k] >= 64) return;
+  if (!g_dump) g_dump = std::fopen("cbdump.bin", "wb");
+  if (!g_dump) return;
+  ++g_dumped[k];
+  const uint32_t sz = uint32_t(size);
+  float cam[64];
+  std::memcpy(cam, recomp::g_guest_base + 0x2097560, 128);
+  std::memcpy(cam + 32, recomp::g_guest_base + 0x2AED580, 128);
+  std::fwrite(&sz, 4, 1, g_dump);
+  std::fwrite(cam, 4, 64, g_dump);
+  std::fwrite(data, 1, size, g_dump);
+  std::fflush(g_dump);
+}
+
 void OnUpload(const void* data, size_t size, uint32_t bind, uint32_t width) {
+  if (bind & 0x4) MaybeDump(data, size);
   Cam cams[kRing];
   std::memcpy(cams, g_cams.data(), sizeof cams);
   const auto* f = static_cast<const float*>(data);
@@ -77,7 +103,10 @@ void OnUpload(const void* data, size_t size, uint32_t bind, uint32_t width) {
 void CbScanFrame() {
   static const bool on = recomp::Env("CBSCAN") != nullptr;
   if (!on) return;
-  if (!recomp::hle::g_buffer_upload_hook) recomp::hle::g_buffer_upload_hook = OnUpload;
+  if (!recomp::hle::g_buffer_upload_hook) {
+    recomp::hle::g_buffer_upload_hook = OnUpload;
+    if (const char* d = recomp::Env("CBSCAN_DUMP")) g_dump_from = std::strtoull(d, nullptr, 10);
+  }
   const uint8_t* B = recomp::g_guest_base;
   float world[16], view[16];
   std::memcpy(world, B + 0x20975A0, sizeof world);

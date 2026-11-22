@@ -170,3 +170,14 @@ Conclusion: 120 fps output needs the render thread to draw the last frame's pack
 - Paths for an in-between frame:
   1. Record a frame's D3D11 immediate-context calls in the SwARc forwarder, then replay them with the view patched in the known constant-buffer offsets. This needs the view-projection products found as well.
   2. Have the game thread post a second set of ring commands for the same packets. This needs the packet lifetime and the command producer to be traced.
+
+### Constant-buffer layout (`FFXII_CBSCAN_DUMP=<frame>`, `cbdump.bin` from `win-cbd1.log`)
+
+The dump holds the first 64 uploads each of 928 and 8864 bytes after the given frame, each one with the view and camera matrices of that moment.
+- **8864 bytes:** the view is at 0x1F80-0x1FBF, transposed, with the translation in the fourth column (rows are the view's columns: 1.000, -0.000, 0.0085, -97.917 ...). A separate screen-space projection follows at 0x1FC0-0x1FFF: 401.4 and -624.4 on the diagonal, -2048 offsets, and -1 in the w row.
+- **928 bytes:** the combined projection times view (screen space, transposed) is at 0x2D0-0x30F. Its last row, at 0x300, is minus the view's third column (0.008, -0.3275, -0.9448, 137.076). The 3-float view matches at 0x50 and 0x110 from the first scan are rotation-only blocks. In these samples 0x50-0x7F holds NaN, so that block is unused for these draws.
+- No buffer holds the plain camera position.
+- To draw with a blended view V' instead of V:
+  - write V' (transposed) at 8864:0x1F80;
+  - replace the 928:0x2D0 block M = P·V with M·V⁻¹·V'. V⁻¹ is the camera transform at 0x20975A0, so the projection is not needed.
+- How to issue a second frame is still open. A route to evaluate is to record each frame on two D3D11 deferred contexts, with the in-between one receiving the patched buffer data at Unmap, and then run both command lists with a present between them. Deferred contexts accept only WRITE_DISCARD (and NO_OVERWRITE for some buffers) and cannot do queries or readback, so the game's map types decide whether this works.
