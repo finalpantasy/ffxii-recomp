@@ -59,3 +59,18 @@ Open questions:
 2. Whether code outside these globals assumes 60 Hz ticks: the 0x208F570 counter, the n=1/2 update argument, and hard-coded 2:1 parity at the 136 helper call sites.
 
 The likely route past 60 fps is to keep the simulation at 60 Hz and render extra interpolated frames, rather than to shrink the step.
+
+## Render side (first look, 2026-11-22)
+
+- After the update, 0x250540 builds the frame's display lists into double buffers:
+  - 0x2481A0 flips the buffer index 0x208ED5C (xor 1) and sets 0x208F560.
+  - 0x248030 builds one list into that buffer. It is called for the three lists at 0x208EA20, then 0x208EA40 and 0x208EA48; it also checks 0x1EDDA0.
+  - 0x248190 clears 0x208F560.
+- 0x250CA0 reads the tick counter 0x208F570, so some list content is tick-timed.
+- The render thread consumes the other buffer. Its busiest lifted function, f_00628B40 (called only from 0x629970), copies packet floats into GPU buffers.
+- Shader reflection does not name the world matrices: only the 14 post-effect shaders call D3DReflect (`m44_ModelViewProject`, DOF, tonemap). World transforms arrive already baked into the packets.
+
+Plan for interpolation:
+1. Keep update() at 60 Hz and present twice per tick: draw the last packet pair again, with the camera blended between the two most recent ticks.
+2. To blend the camera, find the view matrix in the packet stream. Approach: dump 0x208EA20-list packets for two consecutive ticks while only the camera moves (scripted right-stick input), and diff them.
+3. Character transforms come after the camera and need the same diff method per object.
