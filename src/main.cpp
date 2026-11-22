@@ -10,7 +10,12 @@ namespace {
 
 void Usage() {
   std::cerr << "usage: ffxii_recomp --game-dir PATH [--exe PATH] [--exact-sse-flags]\n"
-               "         [--mods-dir PATH] [--mods-disable ID,ID] [--mods-log] [-- ARGS...]\n";
+               "         [--mods-dir PATH] [--mods-disable ID,ID] [--mods-log]\n"
+               "         [--interp] [--interp-no-pace] [--interp-t T] [-- ARGS...]\n"
+               "  --interp          show a blended frame between each two game frames\n"
+               "                    (60 Hz game logic, twice the presented frame rate)\n"
+               "  --interp-no-pace  present the blended and real frame together (testing)\n"
+               "  --interp-t T      blend point between the frames, 0..1 (default 0.5)\n";
 }
 
 // The mod loader reads FFXII_MODS_* (src/mods.cpp); a flag sets the same
@@ -48,6 +53,15 @@ int main(int argc, char** argv) {
       SetSwitch("FFXII_MODS_DISABLE", argv[++i]);
     } else if (arg == "--mods-log") {
       SetSwitch("FFXII_MODS_LOG", "1");
+    } else if (arg == "--interp") {
+      // SwARc d3d11.cpp/dxgi.cpp: record each frame on deferred contexts and
+      // present a blended copy before it.
+      SetSwitch("FFXII_D3D_RECORD", "1");
+      SetSwitch("FFXII_D3D_INTERP", "1");
+    } else if (arg == "--interp-no-pace") {
+      SetSwitch("FFXII_D3D_PACE", "0");
+    } else if (arg == "--interp-t" && i + 1 < argc) {
+      SetSwitch("FFXII_D3D_INTERP_T", argv[++i]);
     } else if (arg == "--") {
       for (int j = i + 1; j < argc; j++) {
         if (!game_args.empty()) game_args += ' ';
