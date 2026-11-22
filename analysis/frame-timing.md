@@ -37,8 +37,25 @@ Goal: frame rates above 60 fps without changing game speed. This records what dr
 - The game ran in slow motion: at 230 s it was still in a courtyard cutscene that the 60 fps baseline passes well before then.
 - So these globals set the simulation step but not the frame cap, and 120 fps needs more than new values.
 
+## Frame limiter (0x6234A0)
+
+- The limiter sleeps until `r14 * 1/60 s` have passed since the last frame, then spins on Sleep(0).
+  - r14 is 1 or 2.
+  - The interval constant is 0x9010A0 = 1/60, or 0x900378 = 1.001/60 when the refresh rate is not a multiple of 10.
+- 0x1E03F0 and 0x1D8240 use the same constants to turn the 60 Hz tick count into seconds, so they must not be changed globally.
+- VSync off alone still caps at 60 (`win-nv1.log`), so this limiter is the cap.
+
+## Experiment 2: SIM_MULT=2, limiter interval halved (`win-sim2b.log`)
+
+- The wrapper on 0x6234A0 divides both constants by k only during the call. Run data `data-iw-nv` has VSync=Off.
+- Result: 119.9 fps in calm stretches and 85-117 in combat, at 29% machine load. 120 fps rendering is possible.
+- The 1/60 s tick counter 0x208F570 then advances once per frame (about 120 a second), so tick-driven logic runs twice as fast.
+- The game measures time in whole 1/60 s ticks: update() takes an integer n, which is 1 at 60 fps and 1 or 2 at 30 fps. A 120 fps frame is half a tick, which these integer counters cannot represent.
+
+Conclusion: higher frame rates need the simulation to stay at 60 Hz with rendered frames interpolated between ticks, not a smaller step. `FFXII_SIM_MULT` stays as a measurement switch only; its game speed is wrong.
+
 Open questions:
-1. Where the 60 fps cap is enforced: the present interval or a sleep in the pacer.
+1. Answered above: the cap is the limiter at 0x6234A0.
 2. Whether code outside these globals assumes 60 Hz ticks: the 0x208F570 counter, the n=1/2 update argument, and hard-coded 2:1 parity at the 136 helper call sites.
 
 The likely route past 60 fps is to keep the simulation at 60 Hz and render extra interpolated frames, rather than to shrink the step.

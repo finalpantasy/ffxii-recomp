@@ -4,7 +4,13 @@
 // the same as a float, 0x1DFE0BC the per-frame time scale (1.0 or 0.5),
 // and 0x1F82E38 the 60 fps flag. With FrameLimit=60 and k > 1 this wrapper
 // rescales them for 60*k fps after the original runs.
+// 006234A0 is the frame limiter: it sleeps until r14 * 1/60 s (0x9010A0, or
+// 1.001/60 at 0x900378) have passed since the last frame. 0x1E03F0 shares
+// those constants to turn the 60 Hz tick count into seconds, so the wrapper
+// divides them by k only while the limiter runs. It also logs, once a
+// second, the 1/60 s tick counter 0x208F570 (60 per second = real speed).
 
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -16,12 +22,22 @@
 
 namespace recomp::gen {
 void f_001EDDC0_lifted(::recomp::Ctx& c);
+void f_006234A0_lifted(::recomp::Ctx& c);
+
+namespace {
+int SimMult() {
+  static const int k = [] {
+    const char* e = recomp::Env("SIM_MULT");
+    return e ? std::atoi(e) : 1;
+  }();
+  return k;
+}
+}  // namespace
 
 void f_001EDDC0(::recomp::Ctx& c) {
   const bool fps60 = uint32_t(c.rcx) != 0;
   f_001EDDC0_lifted(c);
-  const char* e = recomp::Env("SIM_MULT");
-  const int k = e ? std::atoi(e) : 1;
+  const int k = SimMult();
   if (!fps60 || k <= 1) return;
   uint8_t* B = recomp::g_guest_base;
   const int32_t ticks = 2 * k;
@@ -30,5 +46,33 @@ void f_001EDDC0(::recomp::Ctx& c) {
   std::memcpy(B + 0x1DFE0B8, &fticks, 4);
   std::memcpy(B + 0x1DFE0BC, &scale, 4);
   std::fprintf(stderr, "[frame_rate] SIM_MULT=%d: %d frames per 30 Hz tick, scale %g\n", k, ticks, scale);
+}
+
+void f_006234A0(::recomp::Ctx& c) {
+  const int k = SimMult();
+  if (k <= 1) return f_006234A0_lifted(c);
+  uint8_t* B = recomp::g_guest_base;
+  static double a, b;  // original constants, read once
+  static const bool init = (std::memcpy(&a, B + 0x9010A0, 8), std::memcpy(&b, B + 0x900378, 8), true);
+  (void)init;
+  const double ak = a / k, bk = b / k;
+  std::memcpy(B + 0x9010A0, &ak, 8);
+  std::memcpy(B + 0x900378, &bk, 8);
+  f_006234A0_lifted(c);
+  std::memcpy(B + 0x9010A0, &a, 8);
+  std::memcpy(B + 0x900378, &b, 8);
+  static auto t0 = std::chrono::steady_clock::now();
+  static uint32_t ticks0 = 0, frames = 0;
+  ++frames;
+  const auto now = std::chrono::steady_clock::now();
+  const double dt = std::chrono::duration<double>(now - t0).count();
+  if (dt >= 5.0) {
+    uint32_t ticks;
+    std::memcpy(&ticks, B + 0x208F570, 4);
+    std::fprintf(stderr, "[frame_rate] %.1f fps, %.1f ticks/s\n", frames / dt, (ticks - ticks0) / dt);
+    ticks0 = ticks;
+    frames = 0;
+    t0 = now;
+  }
 }
 }  // namespace recomp::gen
