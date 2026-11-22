@@ -72,3 +72,4 @@ crt 00861EC0 memset
 # Frame-timing globals (src/frame_rate.cpp, FFXII_SIM_MULT=k experiment).
 replace 001EDDC0
 replace 006234A0
+replace 00248030

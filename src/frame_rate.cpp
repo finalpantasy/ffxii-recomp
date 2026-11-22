@@ -15,6 +15,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
+#include <set>
+#include <vector>
 
 #include "runtime/env.h"
 #include "x86/lifted.h"
@@ -27,6 +30,7 @@ void MaybeStartWatch();
 namespace recomp::gen {
 void f_001EDDC0_lifted(::recomp::Ctx& c);
 void f_006234A0_lifted(::recomp::Ctx& c);
+void f_00248030_lifted(::recomp::Ctx& c);
 
 namespace {
 int SimMult() {
@@ -105,5 +109,41 @@ void f_006234A0(::recomp::Ctx& c) {
     frames = 0;
     t0 = now;
   }
+}
+
+// FFXII_TASKS=<call>[,<call>...]: on those calls of the task runner 0x248030 per list
+// head, walk the task tree (callback +0, parent +0x10, first child +0x18, next sibling +0x20; 0x2482E0 unlinks) and
+// log each distinct callback with its count.
+void f_00248030(::recomp::Ctx& c) {
+  static const char* e = recomp::Env("TASKS");
+  if (e) {
+    static std::map<uint64_t, int> calls;
+    const uint64_t head = c.rcx;
+    const int k = ++calls[head];
+    bool hit = false;
+    for (const char* p = e; *p;) {  // comma-separated call numbers
+      if (std::atoi(p) == k) hit = true;
+      while (*p && *p != ',') ++p;
+      if (*p) ++p;
+    }
+    if (hit) {
+      uint8_t* B = recomp::g_guest_base;
+      auto Rd = [B](uint64_t a) { uint64_t v; std::memcpy(&v, B + a, 8); return v; };
+      std::map<uint64_t, int> cb;
+      std::vector<uint64_t> stack{head};
+      std::set<uint64_t> seen;
+      while (!stack.empty() && seen.size() < 20000) {
+        const uint64_t n = stack.back();
+        stack.pop_back();
+        if (!n || n >= 0x100000000ull || !seen.insert(n).second) continue;
+        ++cb[Rd(n)];
+        stack.push_back(Rd(n + 0x18));
+        stack.push_back(Rd(n + 0x20));
+      }
+      std::fprintf(stderr, "[tasks] list 0x%llx: %zu nodes\n",(unsigned long long)head, seen.size());
+      for (auto& [f, k] : cb) std::fprintf(stderr, "[tasks]   cb 0x%llx x%d\n",(unsigned long long)f, k);
+    }
+  }
+  f_00248030_lifted(c);
 }
 }  // namespace recomp::gen

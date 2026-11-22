@@ -110,3 +110,27 @@ Method: `FFXII_SNAP=start,count,interval` (src/frame_rate.cpp) writes `.data` sn
   - It uses the object at 0x2AED4A0 (+0xC0) as scratch.
 - One `replace` on 0x3820C0 can therefore record each tick's final camera (view at 0x2097560 and 0x2AED580) and, for an in-between frame, overwrite both with a blend.
 - Still open: how to present an extra frame between ticks. That needs either re-running the render submission for the same display lists, or splitting 0x250540's update (0x184960) from its list build and present. 0x208ED5C is task bookkeeping, not a render buffer index, so drawing is done by some of these tasks. Next, sort the tasks in the 0x208EA20-0x208EA48 lists by callback into simulation tasks and draw tasks. An in-between frame then runs only the draw tasks with the blended camera.
+
+## Frame structure from the top (2026-11-22)
+
+- The app object is `GameApplication`, derived from PhyreEngine `Phyre::PFramework::PApplication` (RTTI at 0x1CEBFF8).
+  - Vtable at 0x8C5760: 0x17CC70, 0x79F9E0, 0x17CEB0, 0x17CF30, **0x17CCD0**, 0x17CDE0, 0x17CDC0, 0x17CE50, 0x17D090, 0x17D0C0, 0x17D120.
+- Slot 4, 0x17CCD0, is the per-frame method. Chain: 0x17CCD0 -> 0x17D6E0 -> 0x22A490 -> 0x22A580, the frame body.
+  - The frame limiter 0x6234A0 is called from the framework loop (0x607588), not from this method.
+- 0x22A580 switches on the game mode from 0x259240 and calls one handler. Each handler runs update and draw preparation together:
+
+| handler | reaches |
+|---|---|
+| 0x22BC20 | the per-frame driver 0x250540, then the update 0x184960 |
+| 0x22B7E0 | the update 0x184960 directly |
+| 0x22B8C0 | the scene camera 0x36F510 -> 0x3820C0 |
+| 0x22A770 | the scene camera through 0x36F510 (3 call sites) |
+| 0x22B6E0, 0x22AF50, 0x22B000 | other modes |
+
+- Task census (`FFXII_TASKS=<call>[,<call>...]` wraps 0x248030; tree links: parent +0x10, first child +0x18, next sibling +0x20, previous +0x28, child count +0x30):
+  - The main list had 42 tasks in `win-tasks3.log` and 19 in `win-tasks4.log`; the other three lists had 1 each.
+  - No task callback reaches 0x3820C0 through direct calls, so the scene camera runs from the mode handlers, not from tasks.
+- `tools/callgraph.py` answers direct-call reachability questions over the lifted code.
+- Next:
+  1. Log 0x259240's mode during field play and battle, to see which handler draws the field.
+  2. Within that handler, separate the update calls from the draw calls. An in-between frame then repeats only the draw part, with the blended camera written by a wrapper on 0x3820C0.
