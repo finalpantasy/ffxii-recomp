@@ -93,6 +93,20 @@ Ids 13, 17, 21-23 and 26+ did not appear in this run. The message
 table at 0x9150F0-0x915200 also holds ids 0x0B, 0x11, 0x15, 0x16 and
 0x17 with nonzero second fields.
 
+### Replacing a message (2026-11-22)
+
+`count.txt` lines of the form `VA skip=N` make the sample swallow message N:
+the hook sets rax = 0 and returns through `api->ret` without running the
+original. With id 4 (draw) swallowed on the 10 handlers that received it in
+`win-task3.log` (0x366B80, 0x2D2DB0, 0x29D340, 0x582860, 0x2CA1F0, 0x57FE80,
+0x57EDB0, 0x57E610, 0x2C0BE0, 0x3CB4F0), `load2.txt` still loaded the save
+and played the refinery cutscene for 600 s with no fatal; each handler
+swallowed the message more than 1,000 times (`win-skip4b.log`). The
+cutscene frames came out grayscale and smeared, where the pass-through run
+(`win-pass4b.log`, same script and dump window) shows the scene in full
+color. So the replace path works, and at least one of those handlers draws
+part of the post-processing chain.
+
 ## Lua
 
 Lua 5.2.1 is linked in, but the game registers no C functions of its own:
