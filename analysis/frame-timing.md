@@ -255,7 +255,15 @@ Pieces (src/frame_rate.cpp):
 Not adjusted:
 - 0x3E5DF2, a one-step phase offset at setup (1/120 s instead of 1/60).
 - 0x53B129, debug text formatting.
-- The other 1EDE70/1EDDA0/1EDE80 sites. They were checked by reading only,
+- The other 1EDE70/1EDDA0/1EDE80 sites. A game-clock A/B check covers them
+  in aggregate: `fight7.txt` with `FFXII_TEST_CLOCK=game` (inputs land on
+  the same tick at both rates) at k=1 (`win-gc1.log`, 58.6 fps mean) and
+  k=2 (`win-gc2.log`, 77.9 fps mean, about 85% machine load) gives the
+  same tick schedule of 2E0FA0 state changes (battle and event starts and
+  ends) within about 1-2%: for example 2863/2868, 12078/12064, 14740/14679
+  and 15760/15663 ticks. A per-frame system running at double speed in
+  battle (ATB, movement, animation) would shorten those spans by about half.
+  Battle randomness explains the small drift. Individually, they were checked by reading only,
   not one by one in game.
 
 Lifter: the SwARc manifest directive `hook <VA> <name>` emits
