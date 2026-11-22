@@ -215,8 +215,9 @@ bool ParseModIni(const std::string& text, ModInfo& out, std::vector<std::string>
       for (const auto& item : SplitList(val)) out.conflicts.push_back(item);
     } else if (key == "native") {
       for (const auto& item : SplitList(val)) {
-        const fs::path p = fs::u8path(item);
-        if (p.is_absolute() || p.has_root_name() || item.find("..") != std::string::npos) {
+        // Same rule on every host: no drive, no root, no parent step.
+        if (item.find(':') != std::string::npos || item[0] == '/' || item[0] == '\\' ||
+            item.find("..") != std::string::npos) {
           errors.push_back("line " + std::to_string(n) + ": native path '" + item +
                            "' must stay inside the mod folder");
           ok = false;
