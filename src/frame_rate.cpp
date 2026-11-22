@@ -20,6 +20,10 @@
 #include "x86/lifted.h"
 #include "x86/runtime.h"
 
+namespace recomp::ffxii {
+void MaybeStartWatch();
+}
+
 namespace recomp::gen {
 void f_001EDDC0_lifted(::recomp::Ctx& c);
 void f_006234A0_lifted(::recomp::Ctx& c);
@@ -75,6 +79,7 @@ void MaybeSnap() {
 
 void f_006234A0(::recomp::Ctx& c) {
   MaybeSnap();
+  recomp::ffxii::MaybeStartWatch();
   const int k = SimMult();
   if (k <= 1) return f_006234A0_lifted(c);
   uint8_t* B = recomp::g_guest_base;

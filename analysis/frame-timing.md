@@ -90,4 +90,11 @@ Method: `FFXII_SNAP=start,count,interval` (src/frame_rate.cpp) writes `.data` sn
 - The camera objects are an array at 0x2097300, and 0x20972F0 points at the active one's data (slot + 0x20; set at 0x259893).
 - Per-slot state uses stride 0x860 (0x25A2A7: `imul rcx, rax, 0x860`, table 0x2098574).
 - So the view matrix is at camera data + 0x240.
-- The writer is not found yet: the stores go through generic matrix helpers. Next step: wrap the helpers, or compare the matrix before and after candidate calls at runtime, to find the camera update. Then keep the previous tick's matrices and blend them for in-between frames.
+- Writers, found with the write watch (`FFXII_WATCH=2097560,80`, src/watch.cpp, `win-watch2.log`):
+  - f_00259E90 is camera-system init (one caller). It resets 8 camera objects of 0x110 bytes from 0x2097300, plus one at 0x2097B80, and constructs each with 0x3CBFF0. The 0x860 stride above is a different per-slot table.
+  - f_003CBD60, f_003CC080, f_003CBCA0 and f_00202E10 write the camera transform (+0x40..+0x7C). These are camera-object methods; 0x3CBxxx is the camera class.
+  - f_00217610 writes the whole view matrix (+0x00..+0x3C); it is likely the generic affine inverse.
+- Plan for interpolation:
+  1. Hook the render-side copy that puts the view into the packets (0x382660 builds the copy at 0x2AED580).
+  2. Keep the view of the previous tick, and for an in-between frame write a blended view: lerp the camera position and slerp the rotation.
+  3. Characters need the same treatment later.

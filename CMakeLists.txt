@@ -13,7 +13,7 @@ add_executable(mod_index_test tests/mod_index_test.cpp src/mod_index.cpp)
 add_test(NAME mod_index COMMAND mod_index_test)
 
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/generated/full/table.cpp")
-    recomp_add_lifted(ffxii_lifted "${CMAKE_CURRENT_SOURCE_DIR}/generated/full" src/mods.cpp src/mod_index.cpp src/probe.cpp src/frame_rate.cpp)
+    recomp_add_lifted(ffxii_lifted "${CMAKE_CURRENT_SOURCE_DIR}/generated/full" src/mods.cpp src/mod_index.cpp src/probe.cpp src/frame_rate.cpp src/watch.cpp)
     add_executable(ffxii_recomp src/main.cpp)
     target_link_libraries(ffxii_recomp PRIVATE ffxii_lifted recomp_win32 recomp_ucrt recomp_dinput8 recomp_xinput recomp_dbghelp recomp_steam recomp_dxgi recomp_d3d11 recomp_d3dcompiler)
     recomp_bundle(ffxii_recomp)
