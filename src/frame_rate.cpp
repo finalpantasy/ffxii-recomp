@@ -50,6 +50,7 @@ void f_002507C0_lifted(::recomp::Ctx& c);
 void f_003820C0_lifted(::recomp::Ctx& c);
 void f_0022A770_lifted(::recomp::Ctx& c);
 void f_0060EC80_lifted(::recomp::Ctx& c);
+void f_0060A410_lifted(::recomp::Ctx& c);
 void f_0022B6E0_lifted(::recomp::Ctx& c);
 void f_0022B8C0_lifted(::recomp::Ctx& c);
 
@@ -98,6 +99,7 @@ bool SkipThisFrame() {
 }
 uint64_t g_driver_runs = 0, g_driver_skips = 0;
 std::atomic<uint64_t> g_render_calls{0};  // 0x60EC80, render thread
+std::atomic<uint64_t> g_frame_renders{0};  // 0x60A410, render thread
 uint64_t g_calls_250730 = 0, g_calls_22B6E0 = 0, g_calls_22B8C0 = 0;
 
 // FFXII_CAMLOG=1: twice a second, log the tick counter, the camera position
@@ -126,8 +128,9 @@ void MaybeCamLog() {
   next = t + 0.5;
   uint32_t ticks;
   std::memcpy(&ticks, recomp::g_guest_base + 0x208F570, 4);
-  std::fprintf(stderr, "[cam] t %.2f rend %llu h0 %llu h2 %llu tk %llu drv %llu/%llu frame %llu ticks %u pos %.3f %.3f %.3f yaw %.2f turn %.1f/%.1f\n", t,
-               (unsigned long long)g_render_calls.load(), (unsigned long long)g_calls_22B6E0, (unsigned long long)g_calls_22B8C0,
+  std::fprintf(stderr, "[cam] t %.2f fr %llu rend %llu h0 %llu h2 %llu tk %llu drv %llu/%llu frame %llu ticks %u pos %.3f %.3f %.3f yaw %.2f turn %.1f/%.1f\n", t,
+               (unsigned long long)g_frame_renders.load(), (unsigned long long)g_render_calls.load(),
+               (unsigned long long)g_calls_22B6E0, (unsigned long long)g_calls_22B8C0,
                (unsigned long long)g_calls_250730, (unsigned long long)g_driver_runs, (unsigned long long)g_driver_skips,
                (unsigned long long)g_frames, ticks, m[12], m[13], m[14],
                yaw, turn_run, turn_skip);
@@ -254,6 +257,14 @@ void f_0022A770(::recomp::Ctx& c) {
     return;
   }
   f_0022A770_lifted(c);
+}
+
+// 0x60A410(renderer, a, b) runs one render-ring command on the render thread
+// (the loop 0x6106A0 calls it for command 1 with the slot's +0x30/+0x38
+// words); about 5.4 per presented frame in the field. Counted for the log.
+void f_0060A410(::recomp::Ctx& c) {
+  g_frame_renders.fetch_add(1, std::memory_order_relaxed);
+  f_0060A410_lifted(c);
 }
 
 // 0x60EC80 runs the render packet consumer 0x629970 (render thread).

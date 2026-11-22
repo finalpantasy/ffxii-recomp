@@ -162,3 +162,11 @@ Conclusion: 120 fps output needs the render thread to draw the last frame's pack
   - A few 4096-byte uploads hold the view row-major at 0xE8.
 - The camera position never appears as three plain floats, and vertex buffers (bind 0x1, 32736 bytes) match only by chance.
 - So the view is not baked into vertices. An in-between frame can get a blended camera by patching these constant-buffer uploads. The view-projection and model-view-projection products in the same buffers still need to be found, and a replayed frame has to issue the uploads again.
+
+### Render thread (2026-11-22)
+
+- The thread starts at 0x5FE1F0 (a jump to 0x6106A0; its address is passed at 0x607DA8). 0x6106A0 loops over a 256-slot command ring at renderer + 0x40, 40 bytes a slot, with an index at +0x2830. It waits on each slot's event (0x5CD840). Command 1 calls 0x60A410(renderer, [slot+0x30], [slot+0x38]), clears the slot and signals [slot+0x50] (0x5CD650).
+- 0x60A410 runs one ring command, not one frame: about 5.4 calls per presented frame in the field (`win-rt1.log`, `FFXII_CAMLOG` prints the count as `fr`). Calling it twice per command with the same arguments froze the game at boot (`win-rt2.log`), so a frame cannot be redrawn by repeating commands.
+- Paths for an in-between frame:
+  1. Record a frame's D3D11 immediate-context calls in the SwARc forwarder, then replay them with the view patched in the known constant-buffer offsets. This needs the view-projection products found as well.
+  2. Have the game thread post a second set of ring commands for the same packets. This needs the packet lifetime and the command producer to be traced.
