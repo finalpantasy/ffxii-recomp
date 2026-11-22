@@ -178,6 +178,12 @@ uint64_t g_driver_frame[kDrivers] = {};  // calls in the current limited frame
 uint64_t g_driver_hist[kDrivers][4] = {};  // calls per limited frame: 0/1/2/3+
 bool g_tick_now = true;
 uint64_t g_limiter_ns = 0, g_limiter_per[4] = {};
+// Calls at the 0x32D3D0 filter stores (flagged, plain) and the last value.
+uint64_t g_filter_calls[2] = {};
+float g_filter_last[2] = {};
+// Entry counts for manifest `trace_` hooks (game thread only).
+constexpr int kTraceSlots = 16;
+uint64_t g_trace_va[kTraceSlots] = {}, g_trace_calls[kTraceSlots] = {};
 uint64_t g_field_pre = 0, g_field_loop = 0, g_field_other = 0;
 bool TickFrame() { return g_tick_now; }
 void BeginUpdate(Driver d) {
@@ -250,10 +256,32 @@ void f_001EDEC0(::recomp::Ctx& c) {
 namespace {
 uint64_t g_518_addr = 0;  // the byte 0x519001 changed, restored at 0x519015
 uint8_t g_518_byte = 0;
+// FFXII_FILTER_LOG=1: one line per 0x32D3D0 store (seconds, site, old, new),
+// to compare the filter's response at different --fps.
+void LogFilter(uint64_t va, float before, float after) {
+  static const bool on = recomp::Env("FILTER_LOG") != nullptr;
+  if (!on) return;
+  static const uint64_t t0 = recomp::platform::MonotonicNs();
+  std::fprintf(stderr, "[filter] %.4f %s %.5g %.5g\n", (recomp::platform::MonotonicNs() - t0) / 1e9,
+               va == 0x32D4E3 ? "flagged" : "plain", before, after);
+}
+
 bool FpsHook(recomp::Ctx& c, uint64_t va, const char* name) {
   (void)name;
   uint8_t* B = recomp::g_guest_base;
   const uint32_t per = uint32_t(2 * SimMult());  // frames per 30 Hz step
+  if (name && std::strncmp(name, "trace_", 6) == 0) {
+    // Manifest `hook <VA> trace_<VA>` lines: count entries, printed with
+    // the FFXII_SPEEDLOG stats.
+    for (int i = 0; i < kTraceSlots; ++i) {
+      if (g_trace_va[i] == va || g_trace_va[i] == 0) {
+        g_trace_va[i] = va;
+        g_trace_calls[i]++;
+        break;
+      }
+    }
+    return true;
+  }
   switch (va) {
     case 0x519001: {
       // 0x518F50 counts [rbx] down from a scaled frame count and, at 60
@@ -293,12 +321,23 @@ bool FpsHook(recomp::Ctx& c, uint64_t va, const char* name) {
     }
     case 0x32D4E3:
     case 0x32D505: {
+      {
+        const int i = va == 0x32D4E3 ? 0 : 1;
+        g_filter_calls[i]++;
+        std::memcpy(&g_filter_last[i], B + c.rdi + 0xF8, 4);
+      }
       // 0x32D3D0 smooths [rdi+0xF8] toward x, a per-frame value (it is
       // divided by [0x1DFE0B4]). At 60 fps with flags 0x40300000 the step
       // is F = (x/2 + 5F)/6 (stored at 0x32D4E3 from xmm6), otherwise
       // F = (2F + x)/3 (stored at 0x32D505 from xmm0). At k*60, keep each
       // filter's retention per 1/60 s: (5/6)^(1/k) and (2/3)^(1/k) a frame.
-      if (!HighRate()) return true;
+      if (!HighRate()) {
+        float f0, v0;
+        std::memcpy(&f0, B + c.rdi + 0xF8, 4);
+        std::memcpy(&v0, c.xmm[va == 0x32D4E3 ? 6 : 0].b, 4);
+        LogFilter(va, f0, v0);
+        return true;
+      }
       float f, v;
       std::memcpy(&f, B + c.rdi + 0xF8, 4);
       const int reg = va == 0x32D4E3 ? 6 : 0;
@@ -308,6 +347,7 @@ bool FpsHook(recomp::Ctx& c, uint64_t va, const char* name) {
       const double a = 1.0 - std::pow(keep, 1.0 / SimMult());
       v = float(f + (target - f) * a);
       std::memcpy(c.xmm[reg].b, &v, 4);
+      LogFilter(va, f, v);
       return true;
     }
     case 0x1E043A:
@@ -434,6 +474,15 @@ void f_006234A0(::recomp::Ctx& c) {
                  "%c", frames ? g_limiter_ns / 1e6 / frames : 0.0, (unsigned long long)g_limiter_per[0],
                  (unsigned long long)g_limiter_per[1], (unsigned long long)g_limiter_per[2],
                  (unsigned long long)g_limiter_per[3], 10);
+    std::fprintf(stderr, "[frame_rate]   filter 32D3D0 calls flagged %llu plain %llu, last %.4g %.4g\n",
+                 (unsigned long long)g_filter_calls[0], (unsigned long long)g_filter_calls[1], g_filter_last[0],
+                 g_filter_last[1]);
+    g_filter_calls[0] = g_filter_calls[1] = 0;
+    for (int i = 0; i < kTraceSlots && g_trace_va[i]; ++i) {
+      std::fprintf(stderr, "[frame_rate]   trace %06llX calls %llu\n", (unsigned long long)g_trace_va[i],
+                   (unsigned long long)g_trace_calls[i]);
+      g_trace_calls[i] = 0;
+    }
     g_limiter_ns = 0;
     std::memset(g_limiter_per, 0, sizeof g_limiter_per);
     std::memset(g_driver_hist, 0, sizeof g_driver_hist);

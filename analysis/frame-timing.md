@@ -240,9 +240,17 @@ Pieces (src/frame_rate.cpp):
      per-frame blend (keep 5/6 of the old value on the flagged path, 2/3 on
      the plain one). At k*60 the hooks at its stores (0x32D4E3, 0x32D505)
      recover the target from the 60 fps result and blend with
-     1 - keep^(1/k), so the value covers the same ground per 1/60 s. Checked
-     only for no regression (`win-sp120i.log`: no fatal, ticks at or below
-     60/s); the eased value itself was not traced in game.
+     1 - keep^(1/k), so the value covers the same ground per 1/60 s.
+     0x32D3D0 is the horizontal analog-axis filter (input: byte axis 0 from
+     0x46DB10 minus 0x80, dead zone from 0x46DB20; 0x32D620 takes axis 1),
+     called from 0x32C910 about 100 times a second in battle. It reaches the
+     stores only while the stick is outside the dead zone, so `fight7.txt`
+     (stick straight north) never touches them. `FFXII_FILTER_LOG=1` logs
+     each store. With right-stick X pushes in battle (`input/fight7-x.txt`,
+     `win-fx1.log` and `win-fx2.log`) the plain path settles at -0.04189 per
+     frame at 60 fps and -0.02083 at 120 fps (about 2.5 a second in both),
+     with the same time constant: about 6% (60 fps) and 8% (120 fps) of the
+     gap is left after 0.1 s. The flagged path (0x32D4E3) did not run.
 
 Not adjusted:
 - 0x3E5DF2, a one-step phase offset at setup (1/120 s instead of 1/60).
