@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "mod_index.h"
+#include "guest_globals.h"
 #include "runtime/env.h"
 #include "runtime/platform.h"
 #include "x86/lifted.h"
@@ -174,7 +175,7 @@ namespace recomp::gen {
 void f_0019AEE0(Ctx& c) {
   const uint64_t mgr = c.rcx;
   std::lock_guard lock(g_mu);
-  if (!Init() || !mgr || !MRd<uint64_t>(0x1F81110)) return f_0019AEE0_lifted(c);
+  if (!Init() || !mgr || !::ffxii::guest::kVbfManager.Get()) return f_0019AEE0_lifted(c);
   const char* path = reinterpret_cast<const char*>(g_guest_base + c.rdx + MRd<uint64_t>(mgr + 0x70));
   std::string rel(path, strnlen(path, 1024));
   static const bool log_all = recomp::Env("MODS_LOG") != nullptr;

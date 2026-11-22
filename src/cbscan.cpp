@@ -17,6 +17,7 @@
 #include <mutex>
 #include <tuple>
 
+#include "guest_globals.h"
 #include "runtime/env.h"
 #include "x86/lifted.h"
 
@@ -67,8 +68,8 @@ void MaybeDump(const void* data, size_t size) {
   ++g_dumped[k];
   const uint32_t sz = uint32_t(size);
   float cam[64];
-  std::memcpy(cam, recomp::g_guest_base + 0x2097560, 128);
-  std::memcpy(cam + 32, recomp::g_guest_base + 0x2AED580, 128);
+  std::memcpy(cam, ::ffxii::guest::kView.Ptr(), 128);  // view, then camera world
+  std::memcpy(cam + 32, ::ffxii::guest::kRenderView.Ptr(), 128);
   std::fwrite(&sz, 4, 1, g_dump);
   std::fwrite(cam, 4, 64, g_dump);
   std::fwrite(data, 1, size, g_dump);
@@ -109,8 +110,8 @@ void CbScanFrame() {
   }
   const uint8_t* B = recomp::g_guest_base;
   float world[16], view[16];
-  std::memcpy(world, B + 0x20975A0, sizeof world);
-  std::memcpy(view, B + 0x2097560, sizeof view);
+  std::memcpy(world, ::ffxii::guest::kCameraWorld.Ptr(), sizeof world);
+  std::memcpy(view, ::ffxii::guest::kView.Ptr(), sizeof view);
   Cam& c = g_cams[g_cam_next];
   g_cam_next = (g_cam_next + 1) % kRing;
   std::memcpy(c.pos, world + 12, 12);

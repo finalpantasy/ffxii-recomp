@@ -29,6 +29,7 @@
 #include <set>
 #include <vector>
 
+#include "guest_globals.h"
 #include "runtime/env.h"
 #include "runtime/platform.h"
 #include "x86/lifted.h"
@@ -118,7 +119,7 @@ void MaybeCamLog() {
   static auto t0 = std::chrono::steady_clock::now();
   static double next = 0;
   float m[16];
-  std::memcpy(m, recomp::g_guest_base + 0x20975A0, sizeof m);
+  std::memcpy(m, ::ffxii::guest::kCameraWorld.Ptr(), sizeof m);
   // Yaw change per frame, summed by whether the frame that just ended ran
   // the driver (run) or skipped it (skip, FFXII_SKIP_DRIVER only).
   static float prev_yaw = 0;
@@ -135,7 +136,7 @@ void MaybeCamLog() {
   if (t < next) return;
   next = t + 0.5;
   uint32_t ticks;
-  std::memcpy(&ticks, recomp::g_guest_base + 0x208F570, 4);
+  ticks = ::ffxii::guest::kTicks.Get();
   std::fprintf(stderr, "[cam] t %.2f fr %llu rend %llu h0 %llu h2 %llu tk %llu drv %llu/%llu frame %llu ticks %u pos %.3f %.3f %.3f yaw %.2f turn %.1f/%.1f\n", t,
                (unsigned long long)g_frame_renders.load(), (unsigned long long)g_render_calls.load(),
                (unsigned long long)g_calls_22B6E0, (unsigned long long)g_calls_22B8C0,
@@ -153,9 +154,9 @@ void f_001EDDC0(::recomp::Ctx& c) {
   uint8_t* B = recomp::g_guest_base;
   const int32_t ticks = 2 * k;
   const float fticks = float(ticks), scale = 1.0f / float(ticks);
-  std::memcpy(B + 0x1DFE0B4, &ticks, 4);
-  std::memcpy(B + 0x1DFE0B8, &fticks, 4);
-  std::memcpy(B + 0x1DFE0BC, &scale, 4);
+  ::ffxii::guest::kFramesPerTick.Set(ticks);
+  ::ffxii::guest::kFramesPerTickF.Set(fticks);
+  ::ffxii::guest::kFrameTimeScale.Set(scale);
   std::fprintf(stderr, "[frame_rate] SIM_MULT=%d: %d frames per 30 Hz tick, scale %g\n", k, ticks, scale);
 }
 
@@ -163,9 +164,7 @@ namespace {
 // Native k*60 fps (SIM_MULT=k in 60 fps mode): only every k-th frame is a
 // tick frame, where 1/60 s of tick-counted game time passes.
 bool HighRate() {
-  uint32_t fps60;
-  std::memcpy(&fps60, recomp::g_guest_base + 0x1F82E38, 4);
-  return SimMult() > 1 && fps60 != 0;
+  return SimMult() > 1 && ::ffxii::guest::kFps60Flag.Get() != 0;
 }
 // A behind game runs 2-3 updates (driver calls) per presented frame, so
 // tick frames are counted in updates, not in limited frames.
@@ -193,11 +192,9 @@ void BeginUpdate(Driver d) {
 }
 uint64_t g_tick_hist[2][4] = {};  // ticks added per update: [tick update][0/1/2/3+]
 uint32_t Ticks() {
-  uint32_t v;
-  std::memcpy(&v, recomp::g_guest_base + 0x208F570, 4);
-  return v;
+  return ::ffxii::guest::kTicks.Get();
 }
-void SetTicks(uint32_t v) { std::memcpy(recomp::g_guest_base + 0x208F570, &v, 4); }
+void SetTicks(uint32_t v) { ::ffxii::guest::kTicks.Set(v); }
 void CountUpdate(uint32_t before) {
   const uint32_t d = Ticks() - before;
   g_tick_hist[TickFrame()][d < 3 ? d : 3]++;
@@ -236,7 +233,7 @@ void f_0032AE70(::recomp::Ctx& c) {
   f_0032AE70_lifted(c);
   if (!HighRate()) return;
   const float f = float(std::pow(0.5, 1.0 / (2.0 * SimMult())));
-  std::memcpy(recomp::g_guest_base + 0x22C3180, &f, 4);
+  ::ffxii::guest::kDecayPerFrame.Set(f);
 }
 
 // 0x1EDEC0(counter): whether a 30 Hz step falls on this frame for a task
@@ -245,8 +242,7 @@ void f_0032AE70(::recomp::Ctx& c) {
 void f_001EDEC0(::recomp::Ctx& c) {
   const uint32_t counter = uint32_t(c.rcx);
   f_001EDEC0_lifted(c);
-  uint32_t flag;
-  std::memcpy(&flag, recomp::g_guest_base + 0x1DFE0C0, 4);
+  const int32_t flag = ::ffxii::guest::kStep30HzFlag.Get();
   if (HighRate() && flag == 0) c.rax = counter % uint32_t(2 * SimMult()) == 0 ? 1 : 0;
 }
 
@@ -403,7 +399,7 @@ void MaybeSnap() {
   char name[64];
   std::snprintf(name, sizeof name, "snap-%02d-%06llu.bin", taken, (unsigned long long)frame);
   if (FILE* f = std::fopen(name, "wb")) {
-    std::fwrite(recomp::g_guest_base + 0x1DF0000, 1, 0x11A7530, f);
+    std::fwrite(recomp::g_guest_base + ::ffxii::guest::kDataSectionVa, 1, ::ffxii::guest::kDataSectionSize, f);
     std::fclose(f);
   }
   std::fprintf(stderr, "[snap] %s at %.2f s\n", name, t);
@@ -433,7 +429,7 @@ void f_006234A0(::recomp::Ctx& c) {
     f_006234A0_lifted(c);
     g_limiter_ns += recomp::platform::MonotonicNs() - t0;
     uint32_t per;
-    std::memcpy(&per, B + 0x1DF08F8, 4);  // frames per present (r14 in the limiter)
+    per = ::ffxii::guest::kFramesPerPresent.Get();
     g_limiter_per[per < 3 ? per : 3]++;
   }
   static auto t0 = std::chrono::steady_clock::now();
@@ -454,7 +450,7 @@ void f_006234A0(::recomp::Ctx& c) {
   const double dt = std::chrono::duration<double>(now - t0).count();
   if (dt >= 5.0) {
     uint32_t ticks;
-    std::memcpy(&ticks, B + 0x208F570, 4);
+    ticks = ::ffxii::guest::kTicks.Get();
     std::fprintf(stderr,
                  "[frame_rate] %.1f fps, %.1f ticks/s; ticks per update: tick updates %llu/%llu/%llu/%llu, "
                  "others %llu/%llu/%llu/%llu (0/1/2/3+); frames with 2+ driver calls %llu\n",
@@ -511,14 +507,14 @@ void MaybeTickLog(uint32_t arg) {
   uint8_t* B = recomp::g_guest_base;
   auto rd32 = [&](uint64_t a) { uint32_t v; std::memcpy(&v, B + a, 4); return v; };
   auto rd64 = [&](uint64_t a) { uint64_t v; std::memcpy(&v, B + a, 8); return v; };
-  const uint64_t o1 = rd64(0x1F82CF0), o2 = rd64(0x1F82E18);
+  const uint64_t o1 = ::ffxii::guest::kTimingObjA.Get(), o2 = ::ffxii::guest::kTimingObjB.Get();
   const unsigned f88 = o1 ? B[o1 + 0x88] : 255, f118 = o2 ? B[o2 + 0x118] : 255;
   static uint64_t calls = 0;
   ++calls;
   if (g_frames >= first && count) {
     --count;
     std::fprintf(stderr, "[ticklog] frame %llu arg %u flag %u n %u ticks %u o88 %u o118 %u\n",
-                 (unsigned long long)g_frames, arg, rd32(0x1DFE0C0), rd32(0x1F3DA18), rd32(0x208F570), f88, f118);
+                 (unsigned long long)g_frames, arg, unsigned(::ffxii::guest::kStep30HzFlag.Get()), unsigned(::ffxii::guest::kTicksThisFrame.Get()), ::ffxii::guest::kTicks.Get(), f88, f118);
   }
 }
 
@@ -693,7 +689,7 @@ void f_00259240(::recomp::Ctx& c) {
   static uint32_t prev = ~0u;
   static uint64_t calls = 0;
   ++calls;
-  const uint32_t mode = uint32_t(int32_t(int8_t(recomp::g_guest_base[0x2064AD3])));
+  const uint32_t mode = uint32_t(int32_t(::ffxii::guest::kFrameMode.Get()));
   if (mode != prev) {
     prev = mode;
     std::fprintf(stderr, "[mode] %u at call %llu\n",prev, (unsigned long long)calls);

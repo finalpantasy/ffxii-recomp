@@ -15,6 +15,7 @@
 #include <map>
 #include <string>
 
+#include "guest_globals.h"
 #include "runtime/env.h"
 #include "x86/lifted.h"
 #include "x86/runtime.h"
@@ -128,14 +129,15 @@ void SpeedLog() {
   static float px = 0, pz = 0, pyaw = 0;
   static bool have = false;
   uint32_t ticks;
-  std::memcpy(&ticks, recomp::g_guest_base + 0x208F570, 4);
+  ticks = ::ffxii::guest::kTicks.Get();
   float x = 0, z = 0;
   // The follow camera's position (row 3 of its world transform 0x20975A0):
   // the player's position is known only near talk targets.
-  x = Rf(0x20975A0 + 48);
-  z = Rf(0x20975A0 + 56);
+  const ::ffxii::guest::Mat4 cam = ::ffxii::guest::kCameraWorld.Get();
+  x = cam.m[3][0];
+  z = cam.m[3][2];
   const bool pos = true;
-  const float yaw = std::atan2(Rf(0x20975A0 + 32), Rf(0x20975A0 + 40)) * 57.29578f;
+  const float yaw = std::atan2(cam.m[2][0], cam.m[2][2]) * 57.29578f;
   if (!have || ticks - prev_ticks > 8 || !pos) {  // first frame, or a load reset the counter
     have = pos;
     start = ticks;
@@ -308,7 +310,7 @@ double GameClock() {
   static uint64_t total = 0;
   if (!recomp::g_guest_base) return 0;
   uint32_t ticks;
-  std::memcpy(&ticks, recomp::g_guest_base + 0x208F570, 4);
+  ticks = ::ffxii::guest::kTicks.Get();
   const uint32_t d = ticks - last;
   last = ticks;
   if (d <= 8) total += d;
@@ -342,7 +344,7 @@ void f_002E0FA0(Ctx& c) {
     // With the 1/60 s tick counter 0x208F570 and the limited-frame count, so
     // event lengths can be compared across frame rates.
     uint32_t ticks;
-    std::memcpy(&ticks, g_guest_base + 0x208F570, 4);
+    ticks = ::ffxii::guest::kTicks.Get();
     std::fprintf(stderr, "[probe] 2E0FA0 flags 0x%08x -> 0x%08x (ticks %u, frame %llu)\n", prev, v, ticks,
                  (unsigned long long)recomp::ffxii::LimitedFrames());
     prev = v;
