@@ -43,7 +43,8 @@ int main(int argc, char** argv) {
     }
   }
 #if defined(__x86_64__)
-  recomp::sse::g_lazy_flags = !exact_flags;
+  recomp::sse::g_lazy_flags = !exact_flags && recomp::sse::kNativeSse;
+  if (recomp::sse::g_lazy_flags) recomp::sse::EnsureHostMxcsr();
 #endif
   if (game_dir.empty()) {
     Usage();
