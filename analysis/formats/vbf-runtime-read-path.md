@@ -32,7 +32,14 @@ Entry record in the header buffer (0x20 bytes): +0x00 u32 first block index, +0x
 
 Seek (`215220`) and size (`215280`) are not hooked. They only touch `reader+0x20` and `[reader+0x18]+8`, which the synthetic reader fills in.
 
-- The mods folder is `<game dir>/mods`, or `FFXII_MODS_DIR`. `FFXII_MODS_LOG=1` logs every path the game opens: 1,342 in the first 60 s of boot, mostly `jsondata/maps`, `jsondata/cutscenes` and `gamedata/d3d11/artdata/...`.
+- Mods (since 2026-11-21, `src/mod_index.cpp`): the root is `FFXII_MODS_DIR`, else `<exe dir>/mods`, else `<game dir>/mods`. Each folder with a `mod.ini` is a mod and serves the files under its `files/` folder; anything else under the root is the legacy loose tree (implicit mod `loose`, priority 0). `mod.ini` takes `id`, `name`, `version`, `priority` (integer, higher wins) and `enabled`; on equal priority the smaller id wins. Paths match case-insensitively. `FFXII_MODS_DISABLE=id1,id2` turns mods off without editing them. At startup the index is built once and its report (mods, files served, every conflict, manifest errors) goes to the log and to `<root>/mods-report.txt`. Example:
+
+  ```
+  mods/
+    hd-logo/mod.ini        id = hd-logo / priority = 10
+    hd-logo/files/gamedata/titleimage/us/sqex logo size_ffx.tga
+  ```
+- Before the index, the folder was only `<game dir>/mods` or `FFXII_MODS_DIR`, and every open tried `fopen` on the loose path. `FFXII_MODS_LOG=1` logs every path the game opens: 1,342 in the first 60 s of boot, mostly `jsondata/maps`, `jsondata/cutscenes` and `gamedata/d3d11/artdata/...`.
 - A loose file can also add a path the archive lacks. The game tries `gamedata/titleimage/us/sqex logo size_ffx.tga` before the `in/` copy, so a file at the `us/` path takes over the boot logo.
 - Verified 2026-11-21 (log `lead-0016-mods5`): a magenta-banded logo at that path showed on frames 240 to 270, and boot went on to the title screen.
 

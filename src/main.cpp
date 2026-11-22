@@ -1,13 +1,15 @@
+#include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <string>
 
 #include "win32/process.h"
+#include "x86/sse.h"
 
 namespace {
 
 void Usage() {
-  std::cerr << "usage: ffxii_recomp --game-dir PATH [--exe PATH] [-- ARGS...]\n";
+  std::cerr << "usage: ffxii_recomp --game-dir PATH [--exe PATH] [--exact-sse-flags] [-- ARGS...]\n";
 }
 
 }  // namespace
@@ -16,12 +18,19 @@ int main(int argc, char** argv) {
   std::filesystem::path game_dir;
   std::filesystem::path exe;
   std::string game_args;
+  // FFXII never reads the SSE sticky exception flags (no STMXCSR in its
+  // code; _controlfp reads only the control bits), so SSE arithmetic runs
+  // bare by default. --exact-sse-flags or RECOMP_SSE_EXACT_FLAGS=1 tracks them.
+  bool exact_flags = false;
+  if (const char* e = std::getenv("RECOMP_SSE_EXACT_FLAGS")) exact_flags = *e && *e != '0';
   for (int i = 1; i < argc; i++) {
     std::string arg = argv[i];
     if (arg == "--game-dir" && i + 1 < argc) {
       game_dir = argv[++i];
     } else if (arg == "--exe" && i + 1 < argc) {
       exe = argv[++i];
+    } else if (arg == "--exact-sse-flags") {
+      exact_flags = true;
     } else if (arg == "--") {
       for (int j = i + 1; j < argc; j++) {
         if (!game_args.empty()) game_args += ' ';
@@ -33,6 +42,9 @@ int main(int argc, char** argv) {
       return 2;
     }
   }
+#if defined(__x86_64__)
+  recomp::sse::g_lazy_flags = !exact_flags;
+#endif
   if (game_dir.empty()) {
     Usage();
     return 2;
