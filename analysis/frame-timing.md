@@ -152,3 +152,13 @@ Method: `FFXII_SNAP=start,count,interval` (src/frame_rate.cpp) writes `.data` sn
 Conclusion: 120 fps output needs the render thread to draw the last frame's packets a second time with a blended camera. Holding the game thread to 60 Hz is easy (skip 0x22A770), and the images stay clean. The open work is on the render side:
 1. Find where the view and projection enter the packets: a per-view constant buffer (then a blended camera can be written there) or per-object matrices built on the game thread (then the blend must go through the packet build).
 2. Make the render thread re-run its submission (0x608DD0/0x608F20) for the last packet buffer on an in-between frame.
+
+### Where the view reaches the GPU (`FFXII_CBSCAN=1`, `win-cbs1.log`)
+
+- SwARc's D3D11 forwarder has a debug hook on buffer uploads (`recomp::hle::g_buffer_upload_hook`, called from Unmap of a written buffer and from UpdateSubresource). `src/cbscan.cpp` uses it to search each upload for the camera of the last four frames: its world position, and the first row and first column of the view matrix at 0x2097560.
+- Constant buffers (bind flag 0x4) carry the view, uploaded per draw:
+  - 928 bytes, about 160 uploads a frame: view column-major at 0x50 and row-major at 0x110 in every upload.
+  - 8864 bytes, about 550 uploads a frame: view column-major at 0x1F80 in about 72% of them.
+  - A few 4096-byte uploads hold the view row-major at 0xE8.
+- The camera position never appears as three plain floats, and vertex buffers (bind 0x1, 32736 bytes) match only by chance.
+- So the view is not baked into vertices. An in-between frame can get a blended camera by patching these constant-buffer uploads. The view-projection and model-view-projection products in the same buffers still need to be found, and a replayed frame has to issue the uploads again.

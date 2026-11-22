@@ -1,5 +1,6 @@
 // Write watch (FFXII_WATCH=<guest hex addr>[,<len hex>[,<start frame dec>]], Windows hosts).
-// Makes the guest page read-only; every write to it faults into a vectored
+// Makes the guest page read-only (FFXII_WATCH_READ=1: no access, so reads are
+// logged too, with the thread id); every write to it faults into a vectored
 // handler, which logs each distinct host RIP that writes inside
 // [addr, addr+len) (default len 0x80), lets the write through with the trap
 // flag set, and re-protects the page on the single-step. Map the logged RIPs
@@ -25,6 +26,8 @@ namespace {
 
 uintptr_t g_page = 0, g_lo = 0, g_hi = 0;
 thread_local bool t_stepping = false;
+bool g_reads = false;  // FFXII_WATCH_READ=1: also trap reads (PAGE_NOACCESS)
+DWORD Armed() { return g_reads ? PAGE_NOACCESS : PAGE_READONLY; }
 SRWLOCK g_lock = SRWLOCK_INIT;
 std::set<uintptr_t>* g_seen = nullptr;
 
@@ -36,19 +39,21 @@ void Protect(DWORD prot) {
 LONG CALLBACK OnException(EXCEPTION_POINTERS* e) {
   const DWORD code = e->ExceptionRecord->ExceptionCode;
   if (code == EXCEPTION_ACCESS_VIOLATION && e->ExceptionRecord->NumberParameters >= 2 &&
-      e->ExceptionRecord->ExceptionInformation[0] == 1) {
+      (e->ExceptionRecord->ExceptionInformation[0] == 1 ||
+       (g_reads && e->ExceptionRecord->ExceptionInformation[0] == 0))) {
+    const bool write = e->ExceptionRecord->ExceptionInformation[0] == 1;
     const uintptr_t a = e->ExceptionRecord->ExceptionInformation[1];
     if (a < g_page || a >= g_page + 4096) return EXCEPTION_CONTINUE_SEARCH;
     if (a >= g_lo && a < g_hi) {
       const uintptr_t rip = e->ContextRecord->Rip;
       AcquireSRWLockExclusive(&g_lock);
       const bool skip = recomp::ffxii::g_skip_frame;
-      const bool fresh = g_seen->insert(rip * 2 + skip).second;
+      const bool fresh = g_seen->insert(rip * 4 + skip * 2 + write).second;
       ReleaseSRWLockExclusive(&g_lock);
       if (fresh)
-        std::fprintf(stderr, "[watch] write +0x%llx from host rip 0x%llx%s\n",
-                     (unsigned long long)(a - g_lo), (unsigned long long)rip,
-                     skip ? " (driver-skipped frame)" : "");
+        std::fprintf(stderr, "[watch] %s +0x%llx from host rip 0x%llx thread %lu%s\n",
+                     write ? "write" : "read", (unsigned long long)(a - g_lo),
+                     (unsigned long long)rip, GetCurrentThreadId(), skip ? " (driver-skipped frame)" : "");
     }
     Protect(PAGE_READWRITE);
     t_stepping = true;
@@ -57,7 +62,7 @@ LONG CALLBACK OnException(EXCEPTION_POINTERS* e) {
   }
   if (code == EXCEPTION_SINGLE_STEP && t_stepping) {
     t_stepping = false;
-    Protect(PAGE_READONLY);
+    Protect(Armed());
     return EXCEPTION_CONTINUE_EXECUTION;
   }
   return EXCEPTION_CONTINUE_SEARCH;
@@ -88,8 +93,9 @@ void MaybeStartWatch(uint64_t frame) {
   g_hi = g_lo + len;
   g_page = g_lo & ~uintptr_t(4095);
   g_seen = new std::set<uintptr_t>;
+  g_reads = recomp::Env("WATCH_READ") != nullptr;
   AddVectoredExceptionHandler(1, OnException);
-  Protect(PAGE_READONLY);
+  Protect(Armed());
   std::fprintf(stderr, "[watch] guest 0x%llx len 0x%llx, exe base %p\n", addr, len,
                static_cast<void*>(GetModuleHandleW(nullptr)));
 }

@@ -35,6 +35,7 @@
 
 namespace recomp::ffxii {
 void MaybeStartWatch(uint64_t frame);
+void CbScanFrame();
 bool g_skip_frame = false;  // this frame skips the driver (FFXII_SKIP_DRIVER)
 }
 
@@ -176,6 +177,7 @@ void f_006234A0(::recomp::Ctx& c) {
   MaybeSnap();
   ++g_frames;
   recomp::ffxii::MaybeStartWatch(g_frames);
+  recomp::ffxii::CbScanFrame();
   MaybeCamLog();
   const int k = LimitDiv();
   if (k <= 1) return f_006234A0_lifted(c);
