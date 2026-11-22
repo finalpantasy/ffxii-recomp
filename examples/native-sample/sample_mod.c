@@ -22,7 +22,28 @@ static uint64_t g_va[SLOTS];
 static ffxii_fn g_orig[SLOTS];
 static volatile long long g_calls[SLOTS];
 
+static volatile unsigned long long g_ids[SLOTS];  // message ids seen (< 64)
+
+/* Task handlers take (task, msg) with the message id in msg's first dword
+ * (analysis/hook-points.md): log the first call of each id per function. */
+static void LogMessageId(int i, ffxii_cpu* cpu, uint64_t ret) {
+  const uint64_t msg = g_api->reg(cpu, FFXII_RDX);
+  if (msg < 0x10000 || msg >= (1ull << 40)) return;
+  uint32_t id;
+  memcpy(&id, g_api->guest_ptr(msg), 4);
+  if (id >= 64) return;
+  const unsigned long long bit = 1ull << id;
+  if (__atomic_fetch_or(&g_ids[i], bit, __ATOMIC_RELAXED) & bit) return;
+  char msgline[128];
+  snprintf(msgline, sizeof msgline, "%08llX msg id %u (rdx %llX, returns to %08llX)",
+           (unsigned long long)g_va[i], id, (unsigned long long)msg, (unsigned long long)ret);
+  g_api->log(g_api, msgline);
+}
+
 static void Count(int i, ffxii_cpu* cpu) {
+  uint64_t ret0;
+  memcpy(&ret0, g_api->guest_ptr(g_api->reg(cpu, FFXII_RSP)), 8);
+  LogMessageId(i, cpu, ret0);
   long long n = __atomic_add_fetch(&g_calls[i], 1, __ATOMIC_RELAXED);
   long long p = 1;
   while (p < n) p *= 10;

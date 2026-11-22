@@ -61,6 +61,38 @@ call sites:
 So a hook on a handler sees its creation, every tick and the other
 messages, and it can tell them apart by rdx.
 
+### Message ids
+
+A message is a record whose first dword is its id: the constants at
+0x915108 (id 2), 0x915120 (25), 0x9151C0 (3), 0x9151D8 (4) and 0x9151F0
+(5) are 24 bytes each, and others are built on the stack. The sample
+module logs the first call of each id per hooked handler. 16 task handlers
+hooked through a save-load run (`win-task3.log`) received these ids. A
+sender is the function containing the call; meanings are given only where
+the code shows them.
+
+| id | sender (call site) | what the code shows |
+|---|---|---|
+| 1 | 0x2465F0 (0x24674A) | creation: the init, from create 0x244F50/0x245000 |
+| 2 | 0x248030 (0x2480FB) | per-tick update from the list runner |
+| 3 | 0x245E60 (0x2462D2) | draw walk: sent after the task's matrices are copied |
+| 4 | 0x245E60 (0x24635C) | draw walk: draw, before the children (recursion at 0x24637A) |
+| 5 | 0x245E60 (0x2463BE) | draw walk: after the children, when bit 12 of +0x40 is set and bit 24 matches 0x208F564 |
+| 6, 7 | 0x2473F0 (0x247450), 0x247490 (0x2474D2) | |
+| 8, 9 | 0x244830 (0x2448AF, 0x244880) | |
+| 10, 11 | 0x250540 (0x25066B) | the per-frame driver |
+| 12 | 0x247510 (0x247549) | |
+| 14 | 0x246AD0 (0x246C0B), and a non-task path (0x3CB861) | |
+| 15 | 0x244DD0 (0x244EF7) | |
+| 16 | 0x2494F0 (0x249564), 0x2495C0 (0x249634), and a non-task path (0x3C216B) | |
+| 18 | 0x245020 (0x24505C), 0x2473B0 (0x2473CB) | 0x245020 then calls 0x2482E0 |
+| 19, 20, 25 | 0x246C20 (0x24703B, 0x24706D, 0x246C53) | called from 0x2449A9 |
+| 24 | 0x2482E0 (0x2483B4) | the runner's bit-10 path; the runner saves the next sibling before calling it, so the task is probably removed (destroy) |
+
+Ids 13, 17, 21-23 and 26+ did not appear in this run. The message
+table at 0x9150F0-0x915200 also holds ids 0x0B, 0x11, 0x15, 0x16 and
+0x17 with nonzero second fields.
+
 ## Lua
 
 Lua 5.2.1 is linked in, but the game registers no C functions of its own:
