@@ -1,18 +1,31 @@
 #!/usr/bin/env python3
-"""Print lifter manifest `crt` lines for import stubs of memory primitives.
+"""Print lifter manifest `crt` lines for CRT imports the lifter can inline.
 
 A stub is a function that is only `jmp [rip+disp32]` through an import slot.
-For VCRUNTIME140 memcpy, memmove and memset the lifter can emit direct calls
-to the stub inline (SwARc lifter_x86, manifest `crt`), which skips the
-register spill, the dispatch and the HLE call for every small copy.
+For the memory primitives and the float math in WANTED the lifter emits
+direct calls to the stub inline (SwARc lifter_x86, manifest `crt`), which
+skips the register spill, the dispatch and the HLE call. _isnan and _finite
+are called straight through their import slots (`call [rip+disp32]`), so
+for those the line names the slot.
 
 Usage: python -I tools/find_crt_stubs.py <FFXII_TZA.exe> analysis/maps/functions.tsv
 """
 import struct
 import sys
 
-WANTED = {("vcruntime140.dll", "memcpy"), ("vcruntime140.dll", "memmove"),
-          ("vcruntime140.dll", "memset")}
+MEM = {"memcpy", "memmove", "memset", "memcmp"}
+MATH = {"sqrtf", "sqrt", "floorf", "ceilf", "fmodf", "sinf", "cosf", "tanf", "asinf",
+        "acosf", "expf", "logf", "atan2f", "powf"}
+SLOTS = {"_isnan", "_finite"}
+
+
+def wanted(imp, names):
+    if not imp:
+        return False
+    dll, name = imp
+    if name in MEM and dll == "vcruntime140.dll":
+        return name in names
+    return name in names and (dll.startswith("api-ms-win-crt-math") or dll == "ucrtbase.dll")
 
 
 def main():
@@ -66,8 +79,11 @@ def main():
         else:
             continue
         imp = slots.get(slot)
-        if imp in WANTED:
+        if wanted(imp, MEM | MATH):
             print("crt %08X %s" % (va, imp[1]))
+    for slot, imp in sorted(slots.items()):
+        if wanted(imp, SLOTS):
+            print("crt %08X %s" % (slot, imp[1]))
 
 
 if __name__ == "__main__":

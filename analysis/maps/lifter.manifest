@@ -68,6 +68,26 @@ replace 003A1BB0
 # loops (f_00628B40) spent most of their time spilling registers around them.
 crt 00861EBA memcpy
 crt 00861EC0 memset
+# The other CRT imports the lifter inlines (2026-11-22; an import census put
+# sqrtf at about 273,000 calls a second in combat, _isnan and _finite at
+# 60,000 together). _isnan and _finite are called through their import slots.
+crt 00861ED2 memcmp
+crt 00861EFC asinf
+crt 00861F02 atan2f
+crt 00861F08 cosf
+crt 00861F0E sinf
+crt 00861F14 sqrtf
+crt 00861F1A tanf
+crt 00861F4A ceilf
+crt 00861F56 acosf
+crt 00861F5C sqrt
+crt 00861F6E powf
+crt 00861F86 floorf
+crt 00861F8C fmodf
+crt 00861F98 logf
+crt 00861FAA expf
+crt 008C2C68 _isnan
+crt 008C2C70 _finite
 
 # Frame-timing globals (src/frame_rate.cpp, FFXII_SIM_MULT=k experiment).
 replace 001EDDC0
