@@ -39,6 +39,8 @@ struct ModInfo {
   std::vector<Requirement> required;
   std::vector<std::string> conflicts;  // ids
   std::string off_reason;  // why Build turned it off (empty: by mod.ini or flag)
+  std::vector<std::string> native;  // native module DLLs, relative to root
+  std::string root;     // host folder of the mod (holds mod.ini)
   std::string dir;      // host folder holding the files
   size_t files = 0;     // paths this mod supplies (winning or not)
   size_t won = 0;       // paths this mod actually serves
@@ -70,7 +72,9 @@ std::string Normalize(const std::string& path);
 
 // mod.ini: one "key = value" per line; '#' or ';' start a comment line.
 // Keys: id, name, version, priority (integer), enabled (true/false/1/0),
-// requires (comma list of id or id>=version), conflicts (comma list of ids).
+// requires (comma list of id or id>=version), conflicts (comma list of ids),
+// native (comma list of native module DLLs inside the mod folder; see
+// include/ffxii_mod.h).
 // Unknown keys are kept out of ModInfo and reported in `errors`.
 bool ParseModIni(const std::string& text, ModInfo& out, std::vector<std::string>& errors);
 
@@ -80,6 +84,11 @@ int CompareVersions(const std::string& a, const std::string& b);
 
 // Scans `root`. Mods whose id is in `disabled` are listed but not indexed.
 Index Build(const std::string& root, const std::unordered_set<std::string>& disabled = {});
+
+// Enabled mods that declare native modules, lowest-ranked first: each
+// later module's hooks wrap the earlier ones', so the highest-ranked mod
+// runs first on every call.
+std::vector<size_t> NativeLoadOrder(const Index& ix);
 
 // "a,b,,c" -> {a, b, c}: the FFXII_MODS_DISABLE / --mods-disable list.
 std::unordered_set<std::string> ParseIdList(const std::string& list);

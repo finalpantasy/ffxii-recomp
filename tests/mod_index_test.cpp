@@ -175,6 +175,17 @@ int main() {
   }
 
   {
+    ModInfo m;
+    std::vector<std::string> errs;
+    CHECK(ParseModIni("native = a.dll, bin/b.dll\n", m, errs));
+    CHECK(m.native.size() == 2 && m.native[1] == "bin/b.dll" && errs.empty());
+    ModInfo bad;
+    CHECK(!ParseModIni("native = ../x.dll\n", bad, errs));
+    CHECK(!ParseModIni("native = C:/x.dll\n", bad, errs));
+    CHECK(bad.native.empty() && errs.size() == 2);
+  }
+
+  {
     const auto ids = ParseIdList("a,,b,a");
     CHECK(ids.size() == 2 && ids.count("a") && ids.count("b"));
     CHECK(ParseIdList("").empty());

@@ -213,6 +213,17 @@ bool ParseModIni(const std::string& text, ModInfo& out, std::vector<std::string>
       }
     } else if (key == "conflicts") {
       for (const auto& item : SplitList(val)) out.conflicts.push_back(item);
+    } else if (key == "native") {
+      for (const auto& item : SplitList(val)) {
+        const fs::path p = fs::u8path(item);
+        if (p.is_absolute() || p.has_root_name() || item.find("..") != std::string::npos) {
+          errors.push_back("line " + std::to_string(n) + ": native path '" + item +
+                           "' must stay inside the mod folder");
+          ok = false;
+          continue;
+        }
+        out.native.push_back(item);
+      }
     } else {
       errors.push_back("line " + std::to_string(n) + ": unknown key '" + key + "'");
     }
@@ -253,6 +264,7 @@ Index Build(const std::string& root_s, const std::unordered_set<std::string>& di
     }
     if (disabled.count(m.id)) m.enabled = false;
     m.dir = Utf8(d / "files");
+    m.root = Utf8(d);
     ix.mods.push_back(m);
   }
   ResolveRelations(ix.mods, ix.errors);
@@ -319,6 +331,7 @@ std::string Index::Report() const {
     o << "  priority " << m.priority << ", " << m.won << " of " << m.files << " files";
     if (!m.off_reason.empty()) o << "  (" << m.off_reason << ")";
     o << "\n";
+    for (const auto& n : m.native) o << "        native " << n << "\n";
   }
   for (const auto& c : conflicts) {
     o << "  conflict " << c.path << ": " << c.winner << " over";
@@ -327,6 +340,15 @@ std::string Index::Report() const {
   }
   for (const auto& e : errors) o << "  error " << e << "\n";
   return o.str();
+}
+
+std::vector<size_t> NativeLoadOrder(const Index& ix) {
+  std::vector<size_t> out;
+  for (size_t i = 0; i < ix.mods.size(); i++)
+    if (ix.mods[i].enabled && !ix.mods[i].native.empty()) out.push_back(i);
+  std::stable_sort(out.begin(), out.end(),
+                   [&](size_t a, size_t b) { return Ranks(ix.mods[b], ix.mods[a]); });
+  return out;
 }
 
 std::unordered_set<std::string> ParseIdList(const std::string& list) {

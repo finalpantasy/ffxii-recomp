@@ -4,6 +4,7 @@
 #include <string>
 
 #include "mod_index.h"
+#include "native_mods.h"
 #include "runtime/platform.h"
 #include "win32/process.h"
 #include "x86/sse.h"
@@ -13,9 +14,10 @@ namespace {
 void Usage() {
   std::cerr << "usage: ffxii_recomp --game-dir PATH [--exe PATH] [--exact-sse-flags]\n"
                "         [--mods-dir PATH] [--mods-disable ID,ID] [--mods-log] [--mods-watch]\n"
-               "         [--mods-list]\n"
+               "         [--mods-list] [--no-native-mods]\n"
                "  --mods-watch      reload the mods folder when its files change\n"
                "  --mods-list       print the mods that would load and exit (1 on errors)\n"
+               "  --no-native-mods  load no mod DLLs (mod.ini native = ...)\n"
                "         [--interp] [--interp-no-pace] [--interp-t T] [-- ARGS...]\n"
                "  --interp          show a blended frame between each two game frames\n"
                "                    (60 Hz game logic, twice the presented frame rate)\n"
@@ -61,6 +63,8 @@ int main(int argc, char** argv) {
       SetSwitch("FFXII_MODS_LOG", "1");
     } else if (arg == "--mods-list") {
       mods_list = true;
+    } else if (arg == "--no-native-mods") {
+      SetSwitch("FFXII_MODS_NO_NATIVE", "1");
     } else if (arg == "--mods-watch") {
       SetSwitch("FFXII_MODS_WATCH", "1");
     } else if (arg == "--interp") {
@@ -115,5 +119,6 @@ int main(int argc, char** argv) {
   game.exe_name = "FFXII_TZA.exe";
   // The game opens its archive as "../FFXII_TZA.vbf", relative to x64.
   game.exe_dir = "x64";
+  game.before_entry = ffxii::LoadNativeModules;
   return recomp::RunProcess(game, exe.string(), game_dir.string(), game_args);
 }
