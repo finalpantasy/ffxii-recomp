@@ -62,3 +62,9 @@ replace 002E0FA0
 replace 002647D0
 replace 003DA5A0
 replace 003A1BB0
+
+# Import stubs of VCRUNTIME140 memcpy and memset (tools/find_crt_stubs.py,
+# 2026-11-22). Direct calls to them are done inline: the render thread's copy
+# loops (f_00628B40) spent most of their time spilling registers around them.
+crt 00861EBA memcpy
+crt 00861EC0 memset
