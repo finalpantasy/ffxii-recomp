@@ -68,3 +68,6 @@ replace 003A1BB0
 # loops (f_00628B40) spent most of their time spilling registers around them.
 crt 00861EBA memcpy
 crt 00861EC0 memset
+
+# Frame-timing globals (src/frame_rate.cpp, FFXII_SIM_MULT=k experiment).
+replace 001EDDC0
