@@ -291,6 +291,25 @@ bool FpsHook(recomp::Ctx& c, uint64_t va, const char* name) {
       std::memcpy(c.xmm[5].b, &f, 4);
       return true;
     }
+    case 0x32D4E3:
+    case 0x32D505: {
+      // 0x32D3D0 smooths [rdi+0xF8] toward x, a per-frame value (it is
+      // divided by [0x1DFE0B4]). At 60 fps with flags 0x40300000 the step
+      // is F = (x/2 + 5F)/6 (stored at 0x32D4E3 from xmm6), otherwise
+      // F = (2F + x)/3 (stored at 0x32D505 from xmm0). At k*60, keep each
+      // filter's retention per 1/60 s: (5/6)^(1/k) and (2/3)^(1/k) a frame.
+      if (!HighRate()) return true;
+      float f, v;
+      std::memcpy(&f, B + c.rdi + 0xF8, 4);
+      const int reg = va == 0x32D4E3 ? 6 : 0;
+      std::memcpy(&v, c.xmm[reg].b, 4);
+      const double keep = va == 0x32D4E3 ? 5.0 / 6.0 : 2.0 / 3.0;
+      const double target = va == 0x32D4E3 ? 6.0 * v - 5.0 * f : 3.0 * v - 2.0 * f;
+      const double a = 1.0 - std::pow(keep, 1.0 / SimMult());
+      v = float(f + (target - f) * a);
+      std::memcpy(c.xmm[reg].b, &v, 4);
+      return true;
+    }
     case 0x1E043A:
     case 0x1E0528:
       // 0x1E03F0 (time debt: wall time minus ticks * 1/60 s, in 0x1F82D28)

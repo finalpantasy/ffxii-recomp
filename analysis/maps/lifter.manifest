@@ -116,3 +116,5 @@ replace 0022A580
 hook 0062369C fps_limiter_interval
 hook 001E043A fps_debt_interval
 hook 001E0528 fps_frame_interval
+hook 0032D4E3 fps_filter_flagged
+hook 0032D505 fps_filter_plain

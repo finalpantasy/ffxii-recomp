@@ -236,10 +236,15 @@ Pieces (src/frame_rate.cpp):
      0x51B1A5 and 0x51B1CF).
    - 0x32AE70's decay factor is 0.5^(1/(2k)).
    - 0x1EDEC0's every-second-count test becomes every 2k-th.
+   - 0x32D4AA eases the float at [rdi+0xF8] toward a target with a fixed
+     per-frame blend (keep 5/6 of the old value on the flagged path, 2/3 on
+     the plain one). At k*60 the hooks at its stores (0x32D4E3, 0x32D505)
+     recover the target from the 60 fps result and blend with
+     1 - keep^(1/k), so the value covers the same ground per 1/60 s. Checked
+     only for no regression (`win-sp120i.log`: no fatal, ticks at or below
+     60/s); the eased value itself was not traced in game.
 
 Not adjusted:
-- 0x32D4AA, a filter with separate 30 and 60 fps constants whose meaning is
-  not yet clear.
 - 0x3E5DF2, a one-step phase offset at setup (1/120 s instead of 1/60).
 - 0x53B129, debug text formatting.
 - The other 1EDE70/1EDDA0/1EDE80 sites. They were checked by reading only,
