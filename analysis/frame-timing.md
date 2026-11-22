@@ -98,3 +98,13 @@ Method: `FFXII_SNAP=start,count,interval` (src/frame_rate.cpp) writes `.data` sn
   1. Hook the render-side copy that puts the view into the packets (0x382660 builds the copy at 0x2AED580).
   2. Keep the view of the previous tick, and for an in-between frame write a blended view: lerp the camera position and slerp the rotation.
   3. Characters need the same treatment later.
+
+### Scene camera function (0x3820C0)
+
+- f_003820C0, called only through the thin wrapper f_0036F510, runs the per-frame camera step end to end:
+  - It calls the camera method 0x3CBD60, which writes the camera transform at 0x20975A0.
+  - It sets up the render camera object at 0x2AED560: 0x3CBB30, with the aspect ratio stored at 0x2AED570.
+  - It multiplies the source matrix into 0x2AEDD30 (0x202D70) and copies the view to 0x2AED580 (0x202C70).
+  - It uses the object at 0x2AED4A0 (+0xC0) as scratch.
+- One `replace` on 0x3820C0 can therefore record each tick's final camera (view at 0x2097560 and 0x2AED580) and, for an in-between frame, overwrite both with a blend.
+- Still open: how to present an extra frame between ticks. That needs either re-running the render submission for the same display lists, or splitting 0x250540's update (0x184960) from its list build and present. Next, trace whether the render thread can draw one list buffer twice (the flip at 0x2481A0 and the consumer side of 0x208ED5C).
