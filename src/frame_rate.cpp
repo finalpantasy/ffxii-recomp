@@ -48,7 +48,33 @@ void f_001EDDC0(::recomp::Ctx& c) {
   std::fprintf(stderr, "[frame_rate] SIM_MULT=%d: %d frames per 30 Hz tick, scale %g\n", k, ticks, scale);
 }
 
+// FFXII_SNAP=start,count,interval (wall seconds since the first limited
+// frame): writes the image's .data section (0x1DF0000, 0x11A7530 bytes) to
+// snap-NN-<frame>.bin, for finding camera and object state by diffing.
+void MaybeSnap() {
+  static const char* e = recomp::Env("SNAP");
+  if (!e) return;
+  static double start = 0, interval = 1;
+  static int count = 0, taken = 0;
+  static uint64_t frame = 0;
+  static auto t0 = std::chrono::steady_clock::now();
+  static const bool parsed = std::sscanf(e, "%lf,%d,%lf", &start, &count, &interval) >= 2;
+  ++frame;
+  if (!parsed || taken >= count) return;
+  const double t = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+  if (t < start + taken * interval) return;
+  char name[64];
+  std::snprintf(name, sizeof name, "snap-%02d-%06llu.bin", taken, (unsigned long long)frame);
+  if (FILE* f = std::fopen(name, "wb")) {
+    std::fwrite(recomp::g_guest_base + 0x1DF0000, 1, 0x11A7530, f);
+    std::fclose(f);
+  }
+  std::fprintf(stderr, "[snap] %s at %.2f s\n", name, t);
+  ++taken;
+}
+
 void f_006234A0(::recomp::Ctx& c) {
+  MaybeSnap();
   const int k = SimMult();
   if (k <= 1) return f_006234A0_lifted(c);
   uint8_t* B = recomp::g_guest_base;

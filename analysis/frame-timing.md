@@ -74,3 +74,20 @@ Plan for interpolation:
 1. Keep update() at 60 Hz and present twice per tick: draw the last packet pair again, with the camera blended between the two most recent ticks.
 2. To blend the camera, find the view matrix in the packet stream. Approach: dump 0x208EA20-list packets for two consecutive ticks while only the camera moves (scripted right-stick input), and diff them.
 3. Character transforms come after the camera and need the same diff method per object.
+
+## Camera (found 2026-11-22 by snapshot diffing)
+
+Method: `FFXII_SNAP=start,count,interval` (src/frame_rate.cpp) writes `.data` snapshots, and `build/run/input/camturn.txt` turns the camera with the right stick for 10 s at a time. Snapshot pairs are labelled idle or turning from the frame dumps, and `tools/snapdiff.py` keeps the floats that change in every turning pair and in no idle pair, then finds orthonormal 3x3 blocks among them (`win-camturn3.log`).
+
+| address | content |
+|---|---|
+| 0x2097560 | view matrix (world to camera), 4x4 row-major; row 3 is the translation |
+| 0x20975A0 | its inverse, the camera's world transform (position in row 3, for example 100.4, 27.7, 128.4) |
+| 0x2AED580-0x2AEEC70 | several copies of both (render-side; 0x382660 builds one with `lea rdx, [0x2AED580]`) |
+| 0x2CA7F80 | a second, slightly different view (sub-camera; written at 0x4FDDD7, used at 0x382C70, 0x53C862) |
+| 0x1EED440 | other words that change only while turning |
+
+- The camera objects are an array at 0x2097300, and 0x20972F0 points at the active one's data (slot + 0x20; set at 0x259893).
+- Per-slot state uses stride 0x860 (0x25A2A7: `imul rcx, rax, 0x860`, table 0x2098574).
+- So the view matrix is at camera data + 0x240.
+- The writer is not found yet: the stores go through generic matrix helpers. Next step: wrap the helpers, or compare the matrix before and after candidate calls at runtime, to find the camera update. Then keep the previous tick's matrices and blend them for in-between frames.
