@@ -121,6 +121,18 @@ namespace recomp::ffxii {
 // they took. At a correct speed both match between 60 and k*60 fps; only
 // the frame count differs. Called once per limited frame.
 void SpeedLog() {
+  // FFXII_PADLOG=1: log each change of the pad word that 0x46DB40 returns
+  // (0x2AD9E18; bit 4 makes 0x32C910 run the camera reset 0x32DC00).
+  static const bool pad_on = recomp::Env("PADLOG") != nullptr;
+  if (pad_on && recomp::g_guest_base) {
+    static uint16_t prev = 0;
+    uint16_t w;
+    std::memcpy(&w, recomp::g_guest_base + 0x2AD9E18, 2);
+    if (w != prev) {
+      std::fprintf(stderr, "[pad] 0x%04x -> 0x%04x ticks %u\n", prev, w, ::ffxii::guest::kTicks.Get());
+      prev = w;
+    }
+  }
   static const bool on = recomp::Env("SPEEDLOG") != nullptr;
   if (!on || !recomp::g_guest_base) return;
   static uint32_t start = 0, prev_ticks = 0;

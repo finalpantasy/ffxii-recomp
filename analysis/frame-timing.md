@@ -250,7 +250,16 @@ Pieces (src/frame_rate.cpp):
      `win-fx1.log` and `win-fx2.log`) the plain path settles at -0.04189 per
      frame at 60 fps and -0.02083 at 120 fps (about 2.5 a second in both),
      with the same time constant: about 6% (60 fps) and 8% (120 fps) of the
-     gap is left after 0.1 s. The flagged path (0x32D4E3) did not run.
+     gap is left after 0.1 s. The flagged path (0x32D4E3) smooths the
+     camera reset: pad word bit 0x0004 (R3, XInput `rs`; the word at
+     0x2AD9E18 that 0x46DB40 returns uses the PS2 bit order, mapped with
+     `FFXII_PADLOG=1` and `input/pad-map.txt`) makes 0x32C910 call
+     0x32DC00, which sets flags 0x40300000. `input/fight7-r3.txt` presses
+     R3 every 4 s in the fights. Its input shrinks as the camera turns back,
+     so the curve is a closed loop rather than a plain 5/6 decay. As
+     fractions of the settled value, the 60 fps run (`win-r3b.log`) reaches
+     41/65/88% at 0.000/0.017/0.050 s and the 120 fps run (`win-r3a.log`) at
+     0.007/0.024/0.058 s: the same curve, one 120 fps frame later.
 
 Not adjusted:
 - 0x3E5DF2, a one-step phase offset at setup (1/120 s instead of 1/60).
