@@ -44,6 +44,8 @@ using recomp::g_guest_base;
 
 // One synthetic reader: reader (0x30), entry (0x20), block cache (0x18).
 constexpr uint64_t kSlot = 0x80;
+// Reader, entry and a 3-pointer block cache.
+static_assert(sizeof(::ffxii::guest::VbfReader) + sizeof(::ffxii::guest::VbfEntry) + 3 * 8 <= kSlot);
 constexpr uint64_t kSlab = 0x100000;  // 8192 open mod files at once
 
 struct Open {
@@ -60,16 +62,6 @@ ffxii::mods::Index g_index;
 bool g_root_set = false;
 bool g_enabled = false;
 
-template <class T>
-T MRd(uint64_t a) {
-  T v;
-  std::memcpy(&v, g_guest_base + a, sizeof v);
-  return v;
-}
-template <class T>
-void MWr(uint64_t a, T v) {
-  std::memcpy(g_guest_base + a, &v, sizeof v);
-}
 
 void Return(Ctx& c, uint64_t v) {
   c.rax = v;
@@ -176,7 +168,7 @@ void f_0019AEE0(Ctx& c) {
   const uint64_t mgr = c.rcx;
   std::lock_guard lock(g_mu);
   if (!Init() || !mgr || !::ffxii::guest::kVbfManager.Get()) return f_0019AEE0_lifted(c);
-  const char* path = reinterpret_cast<const char*>(g_guest_base + c.rdx + MRd<uint64_t>(mgr + 0x70));
+  const char* path = reinterpret_cast<const char*>(g_guest_base + c.rdx + ::ffxii::guest::At<::ffxii::guest::VbfManager>(mgr)->path_base);
   std::string rel(path, strnlen(path, 1024));
   static const bool log_all = recomp::Env("MODS_LOG") != nullptr;
   if (log_all) std::fprintf(stderr, "[mods] open %s\n", rel.c_str());
@@ -194,12 +186,14 @@ void f_0019AEE0(Ctx& c) {
     std::fprintf(stderr, "[mods] out of reader slots; using the archive for %s\n", path);
     return f_0019AEE0_lifted(c);
   }
-  const uint64_t entry = r + 0x30, cache = r + 0x50;
-  MWr<uint8_t>(r + 0x00, 1);  // in use
-  MWr<uint64_t>(r + 0x18, entry);
-  MWr<uint64_t>(r + 0x20, 0);
-  MWr<uint64_t>(r + 0x28, cache);
-  MWr<uint64_t>(entry + 0x08, size);
+  // A slot holds the reader, then its entry, then an empty block cache.
+  const uint64_t entry = r + sizeof(::ffxii::guest::VbfReader), cache = entry + sizeof(::ffxii::guest::VbfEntry);
+  auto* reader = ::ffxii::guest::At<::ffxii::guest::VbfReader>(r);
+  reader->in_use = 1;
+  reader->entry = entry;
+  reader->position = 0;
+  reader->cache = cache;
+  ::ffxii::guest::At<::ffxii::guest::VbfEntry>(entry)->size = size;
   g_open[r] = {f, size};
   std::fprintf(stderr, "[mods] %s (%llu bytes)\n", path, static_cast<unsigned long long>(size));
   Return(c, r);
@@ -212,7 +206,7 @@ void f_00215110(Ctx& c) {
     lock.unlock();
     return f_00215110_lifted(c);
   }
-  const uint64_t pos = MRd<uint64_t>(c.rcx + 0x20);
+  const uint64_t pos = ::ffxii::guest::At<::ffxii::guest::VbfReader>(c.rcx)->position;
   const uint64_t want = uint32_t(c.r8);
   const uint64_t left = pos < it->second.size ? it->second.size - pos : 0;
   const uint64_t n = want < left ? want : left;

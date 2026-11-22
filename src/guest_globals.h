@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstring>
 
+#include "guest_types.h"
 #include "x86/lifted.h"
 
 namespace ffxii::guest {

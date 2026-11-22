@@ -309,8 +309,7 @@ bool FpsHook(recomp::Ctx& c, uint64_t va, const char* name) {
     case 0x51B1CF: {
       // xmm5 holds the blend fraction before `subss xmm8, xmm5`.
       if (!HighRate()) return true;
-      uint16_t counter;
-      std::memcpy(&counter, B + c.rbx + 0x30, 2);
+      const uint16_t counter = ::ffxii::guest::At<::ffxii::guest::CountedTable>(c.rbx)->frame_counter;
       const float f = float(counter % per) / float(per);
       std::memcpy(c.xmm[5].b, &f, 4);
       return true;
@@ -320,7 +319,7 @@ bool FpsHook(recomp::Ctx& c, uint64_t va, const char* name) {
       {
         const int i = va == 0x32D4E3 ? 0 : 1;
         g_filter_calls[i]++;
-        std::memcpy(&g_filter_last[i], B + c.rdi + 0xF8, 4);
+        g_filter_last[i] = ::ffxii::guest::At<::ffxii::guest::AxisInput>(c.rdi)->filtered_x;
       }
       // 0x32D3D0 smooths [rdi+0xF8] toward x, a per-frame value (it is
       // divided by [0x1DFE0B4]). At 60 fps with flags 0x40300000 the step
@@ -328,14 +327,14 @@ bool FpsHook(recomp::Ctx& c, uint64_t va, const char* name) {
       // F = (2F + x)/3 (stored at 0x32D505 from xmm0). At k*60, keep each
       // filter's retention per 1/60 s: (5/6)^(1/k) and (2/3)^(1/k) a frame.
       if (!HighRate()) {
-        float f0, v0;
-        std::memcpy(&f0, B + c.rdi + 0xF8, 4);
+        const float f0 = ::ffxii::guest::At<::ffxii::guest::AxisInput>(c.rdi)->filtered_x;
+        float v0;
         std::memcpy(&v0, c.xmm[va == 0x32D4E3 ? 6 : 0].b, 4);
         LogFilter(va, f0, v0);
         return true;
       }
-      float f, v;
-      std::memcpy(&f, B + c.rdi + 0xF8, 4);
+      const float f = ::ffxii::guest::At<::ffxii::guest::AxisInput>(c.rdi)->filtered_x;
+      float v;
       const int reg = va == 0x32D4E3 ? 6 : 0;
       std::memcpy(&v, c.xmm[reg].b, 4);
       const double keep = va == 0x32D4E3 ? 5.0 / 6.0 : 2.0 / 3.0;
@@ -659,8 +658,6 @@ void f_00248030(::recomp::Ctx& c) {
       if (*p) ++p;
     }
     if (hit) {
-      uint8_t* B = recomp::g_guest_base;
-      auto Rd = [B](uint64_t a) { uint64_t v; std::memcpy(&v, B + a, 8); return v; };
       std::map<uint64_t, int> cb;
       std::vector<uint64_t> stack{head};
       std::set<uint64_t> seen;
@@ -668,9 +665,10 @@ void f_00248030(::recomp::Ctx& c) {
         const uint64_t n = stack.back();
         stack.pop_back();
         if (!n || n >= 0x100000000ull || !seen.insert(n).second) continue;
-        ++cb[Rd(n)];
-        stack.push_back(Rd(n + 0x18));
-        stack.push_back(Rd(n + 0x20));
+        const auto* node = ::ffxii::guest::At<::ffxii::guest::TaskNode>(n);
+        ++cb[node->handler];
+        stack.push_back(node->link_18);
+        stack.push_back(node->link_20);
       }
       std::fprintf(stderr, "[tasks] list 0x%llx: %zu nodes\n",(unsigned long long)head, seen.size());
       for (auto& [f, k] : cb) std::fprintf(stderr, "[tasks]   cb 0x%llx x%d\n",(unsigned long long)f, k);
