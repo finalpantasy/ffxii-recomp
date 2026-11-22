@@ -95,16 +95,8 @@ uint64_t FileSize(std::FILE* f) {
 
 // Scans g_root, logs the report and writes mods-report.txt.
 ffxii::mods::Index BuildIndex() {
-  std::unordered_set<std::string> off;
-  if (const char* d = recomp::Env("MODS_DISABLE")) {
-    std::string list = d;
-    for (size_t a = 0; a <= list.size();) {
-      size_t b = list.find(',', a);
-      if (b == std::string::npos) b = list.size();
-      if (b > a) off.insert(list.substr(a, b - a));
-      a = b + 1;
-    }
-  }
+  const char* d = recomp::Env("MODS_DISABLE");
+  const std::unordered_set<std::string> off = ffxii::mods::ParseIdList(d ? d : "");
   ffxii::mods::Index index = ffxii::mods::Build(g_root, off);
   const std::string rep = index.Report();
   std::fprintf(stderr, "[mods] %s\n%s", g_root.c_str(), rep.c_str());
@@ -146,9 +138,8 @@ bool Init() {
   namespace fs = std::filesystem;
   std::error_code ec;
   const char* env = recomp::Env("MODS_DIR");
-  if (env && *env) g_root = env;
-  else if (fs::is_directory(recomp::platform::ExeDir() + "/mods", ec)) g_root = recomp::platform::ExeDir() + "/mods";
-  else g_root = recomp::g_proc->game_dir + "/mods";
+  g_root = ffxii::mods::ResolveRoot(env ? env : "", recomp::platform::ExeDir(),
+                                    recomp::g_proc->game_dir);
   if (!fs::is_directory(g_root, ec)) {
     std::fprintf(stderr, "[mods] no folder %s\n", g_root.c_str());
     return g_enabled = false;

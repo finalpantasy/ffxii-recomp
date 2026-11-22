@@ -81,6 +81,14 @@ int CompareVersions(const std::string& a, const std::string& b);
 // Scans `root`. Mods whose id is in `disabled` are listed but not indexed.
 Index Build(const std::string& root, const std::unordered_set<std::string>& disabled = {});
 
+// "a,b,,c" -> {a, b, c}: the FFXII_MODS_DISABLE / --mods-disable list.
+std::unordered_set<std::string> ParseIdList(const std::string& list);
+
+// The mods folder: `flag_dir` when set, else <exe dir>/mods when it exists,
+// else <game dir>/mods.
+std::string ResolveRoot(const std::string& flag_dir, const std::string& exe_dir,
+                        const std::string& game_dir);
+
 // A hash of every file under `root` (relative path, size, modification
 // time), mods-report.txt excepted: it changes when a mod file is added,
 // removed, renamed or rewritten. 0 when `root` is missing.

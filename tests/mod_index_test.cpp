@@ -174,6 +174,18 @@ int main() {
     CHECK(TreeSignature((root / "missing").string()) == 0);
   }
 
+  {
+    const auto ids = ParseIdList("a,,b,a");
+    CHECK(ids.size() == 2 && ids.count("a") && ids.count("b"));
+    CHECK(ParseIdList("").empty());
+    const fs::path exe = root / "exe", game = root / "game";
+    fs::create_directories(exe);
+    CHECK(ResolveRoot("X:/m", exe.string(), game.string()) == "X:/m");
+    CHECK(ResolveRoot("", exe.string(), game.string()) == game.string() + "/mods");
+    fs::create_directories(exe / "mods");
+    CHECK(ResolveRoot("", exe.string(), game.string()) == exe.string() + "/mods");
+  }
+
   fs::remove_all(root);
   std::printf("%s\n", g_fail ? "FAILED" : "ok");
   return g_fail ? 1 : 0;

@@ -329,6 +329,25 @@ std::string Index::Report() const {
   return o.str();
 }
 
+std::unordered_set<std::string> ParseIdList(const std::string& list) {
+  std::unordered_set<std::string> out;
+  for (size_t a = 0; a <= list.size();) {
+    size_t b = list.find(',', a);
+    if (b == std::string::npos) b = list.size();
+    if (b > a) out.insert(list.substr(a, b - a));
+    a = b + 1;
+  }
+  return out;
+}
+
+std::string ResolveRoot(const std::string& flag_dir, const std::string& exe_dir,
+                        const std::string& game_dir) {
+  if (!flag_dir.empty()) return flag_dir;
+  std::error_code ec;
+  if (fs::is_directory(fs::u8path(exe_dir + "/mods"), ec)) return exe_dir + "/mods";
+  return game_dir + "/mods";
+}
+
 uint64_t TreeSignature(const std::string& root_s) {
   std::error_code ec;
   const fs::path root = fs::u8path(root_s);
