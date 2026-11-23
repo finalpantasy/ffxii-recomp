@@ -135,10 +135,22 @@ work as through the dispatcher. `hook_covers_direct` returns 1 for them.
 With the sample counter on all eight and the window procedure 0x798FF0,
 `fight7.txt` at `--fps 120` counted more than 10,000 calls of 0x22A770,
 0x2507C0, 0x248030 and 0x2E0FA0 and more than 100 of 0x244F50 and
-0x2647D0, with no fatal (`win-direct2.log`). Adding a function needs a
-`replace` line, a list entry and a relift of the changed file. Covering
-every function still needs an entry check in the lifter and a full
-regeneration.
+0x2647D0, with no fatal (`win-direct2.log`).
+
+Every other lifted function is covered by entry hooks (2026-11-22). The
+manifest line `entry_hooks` makes the SwARc lifter start each of the
+43,311 functions with `LIFT_ENTRY_HOOK(row)`, a load of slot `row` in
+`g_entry_hooks` (generated `table.cpp`) and an untaken branch.
+`recomp::SetEntryHook` (SwARc `x86/lifted_table.cpp`) fills the slot and
+hands back the previous hook, or for the first one a trampoline that skips
+the hook once for its thread and calls the table entry. `ApiHook` uses
+`direct_hooks.h` for its eight functions and entry hooks for the rest,
+without changing the dispatcher, so a dispatched call is hooked once. In
+`win-entry1.log` (`fight7-x.txt`, `--fps 120`, 87% machine load) the sample
+counted more than 10,000 calls of the axis filter 0x32D3D0 and its caller
+0x32C910, which are only called directly, and more than 100,000 of the
+probe-wrapped 0x3DA5A0, with no fatal. The exe grew from 322 to 366 MB. The
+fps cost of the check is not measured yet: the machine was loaded.
 
 ## Tools
 

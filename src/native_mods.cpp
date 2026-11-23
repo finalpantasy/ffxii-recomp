@@ -8,6 +8,7 @@
 
 #include "direct_hooks.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <deque>
@@ -78,14 +79,34 @@ void ApiSetXmm(ffxii_cpu* cpu, int i, const void* in) {
 void* ApiGuestPtr(uint64_t va) { return recomp::g_guest_base + va; }
 
 int ApiHook(uint64_t va, ffxii_fn fn, ffxii_fn* original) {
-  GuestFn prev = recomp::ReplaceDispatch(va, reinterpret_cast<GuestFn>(fn));
-  if (!prev) return -1;
-  prev = ffxii::direct::Install(va, reinterpret_cast<GuestFn>(fn), prev);
+  GuestFn hook = reinterpret_cast<GuestFn>(fn);
+  GuestFn prev = nullptr;
+  if (ffxii::direct::Covers(va)) {
+    // Project wrappers that offer the hook before their own code.
+    prev = recomp::ReplaceDispatch(va, hook);
+    if (!prev) return -1;
+    prev = ffxii::direct::Install(va, hook, prev);
+  } else if (!recomp::SetEntryHook(va, hook, &prev)) {
+    // No entry hook (not a lifted entry, or the lift has none): the
+    // dispatcher alone, which misses direct calls.
+    prev = recomp::ReplaceDispatch(va, hook);
+    if (!prev) return -1;
+  }
+  // An entry hook needs no dispatcher change: dispatched calls reach the
+  // lifted function, whose entry runs the hook.
   if (original) *original = reinterpret_cast<ffxii_fn>(prev);
   std::fprintf(stderr, "[native] hook %08llX\n", static_cast<unsigned long long>(va));
   return 0;
 }
-int ApiCoversDirect(uint64_t va) { return ffxii::direct::Covers(va) ? 1 : 0; }
+int ApiCoversDirect(uint64_t va) {
+  if (ffxii::direct::Covers(va)) return 1;
+  if (!recomp::kLiftedEntryHooks) return 0;
+  const recomp::LiftedFn* end = recomp::kLiftedFunctions + recomp::kLiftedFunctionCount;
+  const recomp::LiftedFn* it = std::lower_bound(
+      recomp::kLiftedFunctions, end, va,
+      [](const recomp::LiftedFn& f, uint64_t v) { return f.va < v; });
+  return it != end && it->va == va ? 1 : 0;
+}
 void ApiRet(ffxii_cpu* cpu) { C(cpu).rsp += 8; }
 
 uint64_t ApiCall(ffxii_cpu* cpu, uint64_t va, const uint64_t* a, uint32_t n) {

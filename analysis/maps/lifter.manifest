@@ -5,6 +5,10 @@
 # Diagnostic probes (probe <VA> <name>) go here while a diagnosis runs and
 # come out afterwards: a probe site is an entry and splits its function.
 
+# Every lifted function starts with an entry-hook check, so native-module
+# hooks (SetEntryHook) also catch direct calls between lifted functions.
+entry_hooks
+
 entry 00861ED8 VCRUNTIME140.DLL::__C_specific_handler
 
 # Import thunk of __intrinsic_setjmp. Its callers are luaD_rawrunprotected

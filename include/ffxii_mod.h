@@ -34,14 +34,16 @@
  *     which pops the return address as a `ret` would.
  * Exactly one of the two must happen on every path.
  *
- * Coverage (version 1): a hook catches every call that goes through the
- * dispatcher: function pointers, C++ virtual calls, callbacks, Lua C
- * functions, thread entry points and window procedures. Direct calls from
- * one lifted function to another are compiled as plain C++ calls and reach
- * the lifted body, except for the functions listed in src/direct_hooks.h
- * (field handler and drivers, task create and task list, field state flags,
- * talk target), whose hooks catch direct calls too. hook_covers_direct
- * tells which applies; a later version makes every function hookable.
+ * Coverage (version 1): a hook on any lifted function's entry catches
+ * every call, through the dispatcher (function pointers, C++ virtual
+ * calls, callbacks, thread entry points, window procedures) and direct
+ * calls between lifted functions alike: the lift puts an entry-hook check
+ * at the start of every function (manifest `entry_hooks`). A VA that is
+ * not a lifted entry falls back to the dispatcher alone, which misses
+ * direct calls; hook_covers_direct returns 1 when the hook covers both.
+ * For the functions in src/direct_hooks.h the hook runs before the
+ * project's own wrapper code; for other `replace` functions it runs after
+ * the wrapper's code, in place of the lifted body.
  *
  * Threads. Hooks run on whatever guest thread made the call, so module
  * state shared between calls needs its own locking. Install hooks only in
@@ -96,7 +98,7 @@ struct ffxii_api {
    * lifted function (nothing changes). *original receives the function the
    * hook replaced; it is never null on success. */
   int (*hook)(uint64_t va, ffxii_fn fn, ffxii_fn* original);
-  /* 1 when a hook on va also catches direct calls; 0 in version 1. */
+  /* 1 when a hook on va also catches direct calls (every lifted entry). */
   int (*hook_covers_direct)(uint64_t va);
   /* Finishes a replacing hook: pops the return address. */
   void (*ret)(ffxii_cpu* cpu);
