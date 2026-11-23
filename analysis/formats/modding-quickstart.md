@@ -14,3 +14,11 @@ Notes:
 - A loose file can add a path the archive lacks. The game tries language folders in order (`us/` before `in/` for title images), so a file in an earlier folder wins.
 - The override covers files opened through the game's VFS open (`0x59EE90`). Anything read another way is untested.
 - Implementation and layouts: `vbf-runtime-read-path.md`. Archive format: `vbf.md`.
+
+## Editing dialog
+
+1. Extract the script: `python tools/vbf.py extract <FFXII_TZA.vbf> "*ps2data/plan_master/us/event/<area>/<script>/<script>.ebp" <work dir>`. To find a line, boot with `FFXII_MODS_LOG=1`; the scene's script is among the paths it opens.
+2. `python -I tools/ff12text.py dump <script>.ebp -o lines.json`, edit the `text` fields, and keep `{..}` groups as they are.
+3. `python -I tools/ff12text.py build <script>.ebp lines.json -o <mod>/files/ps2data/plan_master/us/event/<area>/<script>/<script>.ebp`.
+
+The character set and file layout are in `text.md`.
