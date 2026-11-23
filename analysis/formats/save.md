@@ -85,7 +85,10 @@ A table mod setting body-armor Defense to 200 (73 records) changed 58 values,
 and an A/B on the same input (`win-defA.log` without the table mod,
 `win-defB.log` with it, HUD read off dumped frames) showed it working: without
 the mod the first swordsman's hit took Reks from 133 to 122 HP; with it he
-stayed at 133 through that fight and the 40 s after.
+stayed at 133 through that fight and the 40 s after. Shield evade works the same way: a mod setting +0x18 of the 19
+shields to 100 (Reks carries 0x10CA, evade 9) changed 12 cached values, and Reks
+stayed at 133 HP for the whole 52 s window (`win-evaB.log`). Magick Resist is
+not tested in battle, because the early fights have no spellcasting enemies.
 
 The loaded battle_pack's base is the global 0x208E680 (set by 0x2368D0, read in 45
 places). Once loaded, its section table holds absolute addresses instead of
