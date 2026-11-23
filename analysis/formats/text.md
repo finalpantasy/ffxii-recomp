@@ -91,7 +91,8 @@ u32 n (71), then n + 1 u32 section offsets. The header, every section and the fi
 
 - All 857 text files of the English set (828 scripts, 29 tables, 1,244 files given) rebuilt byte for byte. Two-unit edits changed only those units.
 - 400 random edits of 1 to 6 units, including longer text, line breaks and `{ex00}` strings: the C++ output matched `ff12text.py build` byte for byte every time.
-- `text_formats_test --mods <dir> <vbf>` on the real archive with two mods: a whole `battle_pack.bin` copy (priority 5) and a patch (priority 10). It reported 11 changed units, one identical and one priority overlap.
+- `text_formats_test --mods <dir> <vbf>` on the real archive with two mods: a whole `battle_pack.bin` copy (priority 5) and a patch (priority 10). It reported 11 changed units, one identical and one priority overlap. `ffxii_recomp --mods-list` printed the same report.
+- In game with those two mods (Windows GPU build, Inner Ward save, `fight7.txt`, `win-merge1.log`): the game opened the merged `battle_pack.bin` (281,208 bytes) from memory, and the battle menu read "Attack (mod)" (both mods), "Magicks & Technicks (mod)" (the whole copy) and "Items (patch)" (the patch, which outranks the copy's "Items (mod)"). The run lasted 1,140 s with no fatal.
 
 ## Not done
 
