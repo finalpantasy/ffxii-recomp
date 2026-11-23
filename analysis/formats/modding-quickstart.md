@@ -43,7 +43,7 @@ p 13 r 1 0x12 u16 = 500
 - Operations: `=` sets the field. `=?` sets it only if no other mod changed it. `+=`, `-=` and `*=` add, subtract and multiply; integer results round and stop at the type's limits. `|=` and `&~=` set and clear bits.
 - Lines starting with `#` are comments. One space after `=` is dropped from text; any further spaces are kept.
 
-Example: section 13 of `battle_pack.bin` holds 557 equipment records of 52 bytes. Record 1 is the Broadsword (word table 1, entry 1); u16 0x12 looks like the price and u8 0x1A is attack (confirmed in game). The game copies equipment stats into the character when the equipment is set and the save keeps that copy, so an attack change shows on a new game or after re-equipping, not on an old save as it is.
+Example: section 13 of `battle_pack.bin` holds 557 equipment records of 52 bytes. Record 1 is the Broadsword (word table 1, entry 1); u16 0x12 looks like the price and u8 0x1A is attack (confirmed in game). Menus show an attack change at once, but battles use a copy of the stats kept in the save: a new game picks the change up, and on an old save the prologue battle still used the old value. When an old save's copy refreshes is not known yet.
 
 When the index is built, the recomp reads each patched or contested file from the archive and merges every mod's version against it. A version is a mod's whole copy (if it ships one) with its strings and `=` sets applied.
 
