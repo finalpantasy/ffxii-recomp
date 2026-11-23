@@ -300,6 +300,23 @@ bool FpsHook(recomp::Ctx& c, uint64_t va, const char* name) {
         g_518_addr = 0;
       }
       return true;
+    case 0x3E5E03:
+      // 0x3E5D60 sets up a fixed-point oscillator: its step [+0x4C6] is a
+      // 30 Hz rate divided by frames per tick (2k), and in 60 fps mode
+      // (0x3E5DF2) `add [+0x4C4], ax` advances the phase by one step, 1/60
+      // s at k=1. Keep that 1/60 s at k*60: add k steps.
+      if (HighRate()) {
+        const uint32_t step = uint32_t(c.rax) & 0xFFFFu;
+        c.rax = (c.rax & ~0xFFFFull) | ((step * uint32_t(SimMult())) & 0xFFFFu);
+        static const bool log = recomp::Env("SPEEDLOG") != nullptr;
+        static int logged = 0;
+        if (log && logged < 8) {
+          ++logged;
+          std::fprintf(stderr, "[frame_rate] phase offset: step %u -> %u\n", step,
+                       unsigned(c.rax & 0xFFFFu));
+        }
+      }
+      return true;
     case 0x51B1A5:
       // 0x51B150 samples a 30-entry table by the frame counter [rbx+0x30]
       // (which wraps at 30 * [0x1DFE0B4]): at 60 fps entry counter / 2,
