@@ -5,6 +5,7 @@
 
 #include "mod_index.h"
 #include "native_mods.h"
+#include "text_mods.h"
 #include "runtime/platform.h"
 #include "win32/process.h"
 #include "x86/sse.h"
@@ -116,8 +117,15 @@ int main(int argc, char** argv) {
                                                       game_dir.string());
     const ffxii::mods::Index index =
         ffxii::mods::Build(root, ffxii::mods::ParseIdList(off ? off : ""));
-    std::cout << "mods folder: " << root << '\n' << index.Report();
-    return index.errors.empty() ? 0 : 1;
+    // Text merging reads the originals from the archive.
+    ffxii::vbf::Archive archive;
+    std::string verr;
+    if ((!index.copies.empty() || !index.patches.empty()) &&
+        !archive.Open((game_dir / "FFXII_TZA.vbf").string(), verr))
+      std::cout << "archive: " << verr << '\n';
+    const ffxii::text::ModTextMerges text = ffxii::text::MergeModText(index, archive);
+    std::cout << "mods folder: " << root << '\n' << index.Report() << text.report;
+    return index.errors.empty() && text.problems == 0 ? 0 : 1;
   }
   if (exe.empty()) exe = game_dir / "x64" / "FFXII_TZA.exe";
   if (!std::filesystem::is_regular_file(exe)) {

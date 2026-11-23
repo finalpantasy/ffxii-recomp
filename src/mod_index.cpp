@@ -265,6 +265,7 @@ Index Build(const std::string& root_s, const std::unordered_set<std::string>& di
     }
     if (disabled.count(m.id)) m.enabled = false;
     m.dir = Utf8(d / "files");
+    m.text_dir = Utf8(d / "text");
     m.root = Utf8(d);
     // A declared native module that is not there fails to load later; say
     // so in the report, where launchers see it (--mods-list exits 1).
@@ -279,6 +280,29 @@ Index Build(const std::string& root_s, const std::unordered_set<std::string>& di
   for (size_t i = 0; i < ix.mods.size(); i++) {
     const fs::path files = fs::u8path(ix.mods[i].dir);
     if (ix.mods[i].enabled && fs::is_directory(files, ec)) Collect(files, files, i, cand);
+  }
+
+  // Text patches: text/<archive path>.txt.
+  std::map<std::string, std::vector<std::pair<size_t, std::string>>> pcand;
+  for (size_t i = 0; i < ix.mods.size(); i++) {
+    const fs::path text = fs::u8path(ix.mods[i].text_dir);
+    if (!ix.mods[i].enabled || !fs::is_directory(text, ec)) continue;
+    std::map<std::string, std::vector<std::pair<size_t, std::string>>> mine;
+    Collect(text, text, i, mine);
+    for (auto& [key, list] : mine) {
+      if (key.size() < 5 || key.compare(key.size() - 4, 4, ".txt") != 0) {
+        ix.errors.push_back(ix.mods[i].id + ": text/" + key + " is not a .txt patch");
+        continue;
+      }
+      ix.mods[i].patches++;
+      pcand[key.substr(0, key.size() - 4)].push_back(list[0]);
+    }
+  }
+  for (auto& [path, list] : pcand) {
+    std::stable_sort(list.begin(), list.end(),
+                     [&](const auto& a, const auto& b) { return Ranks(ix.mods[a.first], ix.mods[b.first]); });
+    auto& out = ix.patches[path];
+    for (const auto& c : list) out.push_back({c.second, c.first});
   }
 
   // Legacy loose files directly under the root.
@@ -311,6 +335,8 @@ Index Build(const std::string& root_s, const std::unordered_set<std::string>& di
     ix.files[path] = {list[0].second, list[0].first};
     ix.mods[list[0].first].won++;
     if (list.size() > 1) {
+      auto& all = ix.copies[path];
+      for (const auto& c : list) all.push_back({c.second, c.first});
       Conflict cf{path, ix.mods[list[0].first].id, {}};
       for (size_t k = 1; k < list.size(); k++) cf.losers.push_back(ix.mods[list[k].first].id);
       ix.conflicts.push_back(std::move(cf));
@@ -335,6 +361,7 @@ std::string Index::Report() const {
     if (m.name != m.id) o << " (" << m.name << ")";
     if (!m.version.empty()) o << " " << m.version;
     o << "  priority " << m.priority << ", " << m.won << " of " << m.files << " files";
+    if (m.patches) o << ", " << m.patches << " text patches";
     if (!m.off_reason.empty()) o << "  (" << m.off_reason << ")";
     o << "\n";
     for (const auto& n : m.native) o << "        native " << n << "\n";
@@ -344,9 +371,19 @@ std::string Index::Report() const {
     for (const auto& l : c.losers) o << " " << l;
     o << "\n";
   }
+  std::vector<std::string> patched;
+  for (const auto& kv : patches) patched.push_back(kv.first);
+  std::sort(patched.begin(), patched.end());
+  for (const auto& p : patched) {
+    o << "  text patch " << p << ":";
+    for (const auto& e : patches.at(p)) o << " " << mods[e.mod].id;
+    o << "\n";
+  }
   for (const auto& e : errors) o << "  error " << e << "\n";
   return o.str();
 }
+
+bool RanksAbove(const ModInfo& a, const ModInfo& b) { return Ranks(a, b); }
 
 std::vector<size_t> NativeLoadOrder(const Index& ix) {
   std::vector<size_t> out;

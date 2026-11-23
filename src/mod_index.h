@@ -4,6 +4,8 @@
 // Layout under the mods root:
 //   <root>/<mod folder>/mod.ini          a mod (see ParseModIni)
 //   <root>/<mod folder>/files/<path>     files that replace or add archive paths
+//   <root>/<mod folder>/text/<path>.txt  text patches for archive text files
+//                                        (text_merge.h)
 //   <root>/<path>                        legacy loose files (implicit mod "loose")
 // A top-level folder without mod.ini belongs to the legacy loose tree.
 //
@@ -42,8 +44,10 @@ struct ModInfo {
   std::vector<std::string> native;  // native module DLLs, relative to root
   std::string root;     // host folder of the mod (holds mod.ini)
   std::string dir;      // host folder holding the files
+  std::string text_dir; // host folder holding text patches (empty for "loose")
   size_t files = 0;     // paths this mod supplies (winning or not)
   size_t won = 0;       // paths this mod actually serves
+  size_t patches = 0;   // text patch files
 };
 
 struct Conflict {
@@ -60,10 +64,18 @@ struct Entry {
 struct Index {
   std::vector<ModInfo> mods;
   std::unordered_map<std::string, Entry> files;  // normalized path -> winner
+  // Paths whose text may need merging (text_merge.h), every provider ranked
+  // best first: all whole copies of a path held by more than one mod, and
+  // all text patches. A path in either map is merged when it is a text file.
+  std::unordered_map<std::string, std::vector<Entry>> copies;
+  std::unordered_map<std::string, std::vector<Entry>> patches;
   std::vector<Conflict> conflicts;
   std::vector<std::string> errors;  // manifest problems, duplicate ids
 
   const Entry* Find(const std::string& archive_path) const;
+  bool MayMerge(const std::string& normalized_path) const {
+    return copies.count(normalized_path) || patches.count(normalized_path);
+  }
   std::string Report() const;
 };
 
@@ -84,6 +96,9 @@ int CompareVersions(const std::string& a, const std::string& b);
 
 // Scans `root`. Mods whose id is in `disabled` are listed but not indexed.
 Index Build(const std::string& root, const std::unordered_set<std::string>& disabled = {});
+
+// The ranking used everywhere: true if a beats b (priority, then id).
+bool RanksAbove(const ModInfo& a, const ModInfo& b);
 
 // Enabled mods that declare native modules, lowest-ranked first: each
 // later module's hooks wrap the earlier ones', so the highest-ranked mod

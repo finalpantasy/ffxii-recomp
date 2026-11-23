@@ -24,3 +24,19 @@ Notes:
 The character set and file layout are in `text.md`.
 
 Menu, help and battle text works the same way with the files in `ps2data/image/ff12/test_battle/us/binaryfile/`. Battle messages and names (commands, items, abilities) come from `battle_pack.bin`: the game never opens the separate `battle_message.bin` or `word.bin`, so edit the pack.
+
+## Text patches and merging
+
+A whole edited copy of a text file blocks every other mod that edits the same file. A text patch changes only the strings it names: `<mod>/text/<archive path>.txt`, one `key = text` line per string.
+
+```
+# <mod>/text/ps2data/image/ff12/test_battle/us/binaryfile/battle_pack.bin.txt
+p 61 w 4 1 = {00}{00}Magicks (patch)
+p 61 w 4 3 = {00}{00}Items (patch)
+```
+
+- Keys: `s <i>` is string i of an event script or st2e table, `w <t> <e>` is entry e of word sub-table t, and in a pack (`battle_pack.bin`) `p <k>` comes first and names the section. `ff12text.py dump` lists the strings in the same order: the key index is the position in the JSON list.
+- Text uses the `ff12text.py` form: `{XX}` for a raw byte, `\n` for a line break and `\\` for a backslash. Word entries start with `{00}{00}`, as in the dump.
+- Lines starting with `#` are comments. One space after `=` is dropped; any further spaces are kept.
+
+When the index is built, the recomp reads each patched or contested text file from the archive and merges every mod's version against it string by string. A version is a mod's whole copy (if it ships one) with its patch applied. Strings that only one mod changed are all kept. If two mods change the same string to the same bytes, the change is kept once and the report says "identical". If they change it differently, the higher-ranked mod wins and the report says "priority". A whole copy that adds or removes strings cannot be merged: the best-ranked such copy is used as it is, and every other mod's change to that file is listed as "needs-patch". The report (`mods-report.txt`, `--mods-list`) has a `text <path>` block for each merged file. `--mods-list` exits 1 on a patch line it could not apply.

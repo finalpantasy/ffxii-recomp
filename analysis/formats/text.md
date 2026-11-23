@@ -85,6 +85,14 @@ u32 n (71), then n + 1 u32 section offsets. The header, every section and the fi
 - In game (Windows GPU build, headless, muted, Steam save on the refinery platform): a mod serving a rebuilt `ene_a0200.ebp` whose text section grew from 0x8840 to 0x8880 (later sections moved by 0x40). The edited subtitle showed, and the subtitles after it still played in order (`win-text4.log`). The character probe ran in `win-text5.log`.
 - In game (Inner Ward save, `fight7.txt`): a rebuilt `battle_pack.bin` 72 bytes longer, with " (mod)" added to four command names in the word section and to five battle messages, showed "Attack (mod)", "Magicks & Technicks (mod)" and "Items (mod)" in the battle menu through the corridor fights and the boss fight, with no fatal (`win-st2c.log`, 99% machine load). The edited messages were not caught on a dumped frame.
 
+## Runtime merging (C++)
+
+`src/text_formats.cpp` ports the layout code of `ff12text.py` to C++ on raw bytes: `Units` splits a file into keyed strings and entries, and `RebuildRaw` lays the file out again. Text patches and the per-string merge are in `src/text_merge.cpp`, and `src/text_mods.cpp` takes the originals from the archive through `src/vbf_reader.cpp` (zlib). Usage is in `modding-quickstart.md`, "Text patches and merging". `text_formats_test` checks the character table, synthetic st2e files and the merge rules. With extracted files as arguments it also rebuilds each one unchanged and checks that replacing its first and last unit changes only those. Checks on 2026-11-22:
+
+- All 857 text files of the English set (828 scripts, 29 tables, 1,244 files given) rebuilt byte for byte. Two-unit edits changed only those units.
+- 400 random edits of 1 to 6 units, including longer text, line breaks and `{ex00}` strings: the C++ output matched `ff12text.py build` byte for byte every time.
+- `text_formats_test --mods <dir> <vbf>` on the real archive with two mods: a whole `battle_pack.bin` copy (priority 5) and a patch (priority 10). It reported 11 changed units, one identical and one priority overlap.
+
 ## Not done
 
 - Edits that change the number of strings or entries.

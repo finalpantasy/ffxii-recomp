@@ -14,6 +14,15 @@ add_subdirectory("${SWARC_DIR}" swarc)
 add_executable(mod_index_test tests/mod_index_test.cpp src/mod_index.cpp)
 add_test(NAME mod_index COMMAND mod_index_test)
 
+# Game text formats and mod text merging (zlib reads the archive originals).
+set(ZLIB_USE_STATIC_LIBS ON)
+find_package(ZLIB REQUIRED)
+set(FFXII_TEXT_SOURCES src/text_formats.cpp src/text_merge.cpp src/text_mods.cpp src/vbf_reader.cpp)
+add_executable(text_formats_test tests/text_formats_test.cpp ${FFXII_TEXT_SOURCES} src/mod_index.cpp)
+target_compile_features(text_formats_test PRIVATE cxx_std_20)
+target_link_libraries(text_formats_test PRIVATE ZLIB::ZLIB)
+add_test(NAME text_formats COMMAND text_formats_test)
+
 # Sample native module (include/ffxii_mod.h): a mod DLL for tests.
 if(WIN32)
     add_library(ffxii_sample_mod MODULE examples/native-sample/sample_mod.c)
@@ -29,10 +38,10 @@ if(WIN32)
 endif()
 
 if(EXISTS "${FFXII_GENERATED_DIR}/table.cpp")
-    recomp_add_lifted(ffxii_lifted "${FFXII_GENERATED_DIR}" src/mods.cpp src/mod_index.cpp src/probe.cpp src/frame_rate.cpp src/watch.cpp src/cbscan.cpp src/direct_hooks.cpp)
+    recomp_add_lifted(ffxii_lifted "${FFXII_GENERATED_DIR}" src/mods.cpp src/mod_index.cpp ${FFXII_TEXT_SOURCES} src/probe.cpp src/frame_rate.cpp src/watch.cpp src/cbscan.cpp src/direct_hooks.cpp)
     add_executable(ffxii_recomp src/main.cpp src/native_mods.cpp)
     target_include_directories(ffxii_recomp PRIVATE include)
-    target_link_libraries(ffxii_recomp PRIVATE ffxii_lifted recomp_win32 recomp_ucrt recomp_dinput8 recomp_xinput recomp_dbghelp recomp_steam recomp_dxgi recomp_d3d11 recomp_d3dcompiler)
+    target_link_libraries(ffxii_recomp PRIVATE ffxii_lifted ZLIB::ZLIB recomp_win32 recomp_ucrt recomp_dinput8 recomp_xinput recomp_dbghelp recomp_steam recomp_dxgi recomp_d3d11 recomp_d3dcompiler)
     recomp_bundle(ffxii_recomp)
     recomp_whole_archive(ffxii_recomp)
 endif()

@@ -6,6 +6,10 @@
 // synthetic reader whose reads come from that file. Seek (215220) and size (215280) need no hook: they only use
 // reader+0x20 and [reader+0x18]+8, which the synthetic reader fills in.
 //
+// Text files that several mods change (whole copies or text/ patches) are
+// merged per string against the archive original when the index is built
+// (text_mods.h), and Find serves the merged bytes from memory.
+//
 // The manifest replaces these three (`replace`), so the lifted bodies are
 // f_X_lifted:
 //   0019AEE0 Find(mgr, path) -> reader or 0; the path is rdx + [mgr+0x70]
@@ -17,6 +21,7 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -25,6 +30,7 @@
 #include <vector>
 
 #include "mod_index.h"
+#include "text_mods.h"
 #include "guest_globals.h"
 #include "runtime/env.h"
 #include "runtime/platform.h"
@@ -49,7 +55,8 @@ static_assert(sizeof(::ffxii::guest::VbfReader) + sizeof(::ffxii::guest::VbfEntr
 constexpr uint64_t kSlab = 0x100000;  // 8192 open mod files at once
 
 struct Open {
-  std::FILE* f;
+  std::FILE* f;                                    // a mod's file, or
+  std::shared_ptr<const ffxii::text::Bytes> mem;   // merged text
   uint64_t size;
 };
 
@@ -59,6 +66,9 @@ std::vector<uint64_t> g_free;
 std::unordered_map<uint64_t, Open> g_open;  // reader va -> loose file
 std::string g_root;
 ffxii::mods::Index g_index;
+ffxii::text::ModTextMerges g_text;
+ffxii::vbf::Archive g_vbf;  // originals for text merging; opened when needed
+std::mutex g_vbf_mu;
 bool g_root_set = false;
 bool g_enabled = false;
 
@@ -86,12 +96,24 @@ uint64_t FileSize(std::FILE* f) {
 #endif
 }
 
-// Scans g_root, logs the report and writes mods-report.txt.
-ffxii::mods::Index BuildIndex() {
+// Scans g_root, merges mod text, logs the report and writes mods-report.txt.
+ffxii::mods::Index BuildIndex(ffxii::text::ModTextMerges& text) {
   const char* d = recomp::Env("MODS_DISABLE");
   const std::unordered_set<std::string> off = ffxii::mods::ParseIdList(d ? d : "");
   ffxii::mods::Index index = ffxii::mods::Build(g_root, off);
-  const std::string rep = index.Report();
+  text = {};
+  if (!index.copies.empty() || !index.patches.empty()) {
+    std::lock_guard lock(g_vbf_mu);
+    static bool tried = false;
+    if (!tried) {
+      tried = true;
+      std::string err;
+      if (!g_vbf.Open(recomp::g_proc->game_dir + "/FFXII_TZA.vbf", err))
+        std::fprintf(stderr, "[mods] %s; text merging off\n", err.c_str());
+    }
+    text = ffxii::text::MergeModText(index, g_vbf);
+  }
+  const std::string rep = index.Report() + text.report;
   std::fprintf(stderr, "[mods] %s\n%s", g_root.c_str(), rep.c_str());
   if (std::FILE* f = std::fopen((g_root + "/mods-report.txt").c_str(), "wb")) {
     std::fputs(rep.c_str(), f);
@@ -118,9 +140,11 @@ void WatchLoop() {
     }
     seen = now;
     std::fprintf(stderr, "[mods] change in %s; reloading\n", g_root.c_str());
-    ffxii::mods::Index index = BuildIndex();
+    ffxii::text::ModTextMerges text;
+    ffxii::mods::Index index = BuildIndex(text);
     std::lock_guard lock(g_mu);
     g_index = std::move(index);
+    g_text = std::move(text);
   }
 }
 
@@ -137,10 +161,10 @@ bool Init() {
     std::fprintf(stderr, "[mods] no folder %s\n", g_root.c_str());
     return g_enabled = false;
   }
-  g_index = BuildIndex();
+  g_index = BuildIndex(g_text);
   static const bool watch = recomp::Env("MODS_WATCH") != nullptr;
   if (watch) std::thread(WatchLoop).detach();
-  g_enabled = watch || !g_index.files.empty() || recomp::Env("MODS_LOG") != nullptr;
+  g_enabled = watch || !g_index.files.empty() || !g_text.files.empty() || recomp::Env("MODS_LOG") != nullptr;
   return g_enabled;
 }
 
@@ -172,17 +196,26 @@ void f_0019AEE0(Ctx& c) {
   std::string rel(path, strnlen(path, 1024));
   static const bool log_all = recomp::Env("MODS_LOG") != nullptr;
   if (log_all) std::fprintf(stderr, "[mods] open %s\n", rel.c_str());
-  const ffxii::mods::Entry* hit = g_index.Find(rel);
-  if (!hit) return f_0019AEE0_lifted(c);
-  std::FILE* f = std::fopen(hit->host.c_str(), "rb");
-  if (!f) {
-    std::fprintf(stderr, "[mods] cannot open %s; using the archive\n", hit->host.c_str());
-    return f_0019AEE0_lifted(c);
+  std::shared_ptr<const ffxii::text::Bytes> mem;
+  std::FILE* f = nullptr;
+  uint64_t size = 0;
+  if (!g_text.files.empty()) {
+    const auto m = g_text.files.find(ffxii::mods::Normalize(rel));
+    if (m != g_text.files.end()) mem = m->second, size = mem->size();
   }
-  const uint64_t size = FileSize(f);
+  if (!mem) {
+    const ffxii::mods::Entry* hit = g_index.Find(rel);
+    if (!hit) return f_0019AEE0_lifted(c);
+    f = std::fopen(hit->host.c_str(), "rb");
+    if (!f) {
+      std::fprintf(stderr, "[mods] cannot open %s; using the archive\n", hit->host.c_str());
+      return f_0019AEE0_lifted(c);
+    }
+    size = FileSize(f);
+  }
   const uint64_t r = NewSlot();
   if (!r) {
-    std::fclose(f);
+    if (f) std::fclose(f);
     std::fprintf(stderr, "[mods] out of reader slots; using the archive for %s\n", path);
     return f_0019AEE0_lifted(c);
   }
@@ -194,8 +227,9 @@ void f_0019AEE0(Ctx& c) {
   reader->position = 0;
   reader->cache = cache;
   ::ffxii::guest::At<::ffxii::guest::VbfEntry>(entry)->size = size;
-  g_open[r] = {f, size};
-  std::fprintf(stderr, "[mods] %s (%llu bytes)\n", path, static_cast<unsigned long long>(size));
+  g_open[r] = {f, std::move(mem), size};
+  std::fprintf(stderr, "[mods] %s (%llu bytes%s)\n", path, static_cast<unsigned long long>(size),
+               f ? "" : ", merged text");
   Return(c, r);
 }
 
@@ -211,8 +245,12 @@ void f_00215110(Ctx& c) {
   const uint64_t left = pos < it->second.size ? it->second.size - pos : 0;
   const uint64_t n = want < left ? want : left;
   size_t got = 0;
-  if (n && Seek(it->second.f, pos) == 0)
+  if (n && it->second.mem) {
+    std::memcpy(g_guest_base + c.rdx, it->second.mem->data() + pos, n);
+    got = n;
+  } else if (n && Seek(it->second.f, pos) == 0) {
     got = std::fread(g_guest_base + c.rdx, 1, n, it->second.f);
+  }
   Return(c, uint32_t(got));
 }
 
@@ -223,7 +261,7 @@ void f_002150D0(Ctx& c) {
     lock.unlock();
     return f_002150D0_lifted(c);
   }
-  std::fclose(it->second.f);
+  if (it->second.f) std::fclose(it->second.f);
   g_free.push_back(it->first);
   g_open.erase(it);
   Return(c, 0);

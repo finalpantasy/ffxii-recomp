@@ -209,6 +209,33 @@ int main() {
     fs::remove_all(nr);
   }
 
+  {
+    // Text patches (text/<path>.txt) and every whole copy of a clashing path
+    // are kept, ranked, for text merging.
+    const fs::path tr = fs::temp_directory_path() / "ffxii_mod_index_text";
+    fs::remove_all(tr);
+    Put(tr / "lo" / "mod.ini", "id = lo\npriority = 1\n");
+    Put(tr / "lo" / "text" / "Dir" / "A.bin.txt", "s 0 = x\n");
+    Put(tr / "lo" / "files" / "dir" / "b.bin", "1");
+    Put(tr / "hi" / "mod.ini", "id = hi\npriority = 5\n");
+    Put(tr / "hi" / "text" / "dir" / "a.bin.txt", "s 0 = y\n");
+    Put(tr / "hi" / "text" / "dir" / "notes.md", "?");
+    Put(tr / "hi" / "files" / "dir" / "b.bin", "2");
+    Put(tr / "off" / "mod.ini", "id = off\nenabled = false\n");
+    Put(tr / "off" / "text" / "dir" / "a.bin.txt", "s 0 = z\n");
+    Index tx = Build(tr.string());
+    CHECK(tx.patches.size() == 1 && tx.patches.count("dir/a.bin"));
+    if (tx.patches.count("dir/a.bin")) {
+      const auto& p = tx.patches.at("dir/a.bin");
+      CHECK(p.size() == 2 && tx.mods[p[0].mod].id == "hi" && tx.mods[p[1].mod].id == "lo");
+    }
+    CHECK(tx.copies.size() == 1 && tx.copies.count("dir/b.bin") && tx.copies.at("dir/b.bin").size() == 2);
+    CHECK(tx.MayMerge("dir/a.bin") && tx.MayMerge("dir/b.bin"));
+    CHECK(tx.errors.size() == 1 && tx.errors[0].find("notes.md") != std::string::npos);
+    CHECK(tx.Report().find("text patch dir/a.bin: hi lo") != std::string::npos);
+    fs::remove_all(tr);
+  }
+
   fs::remove_all(root);
   std::printf("%s\n", g_fail ? "FAILED" : "ok");
   return g_fail ? 1 : 0;
