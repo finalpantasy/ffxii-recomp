@@ -38,6 +38,9 @@
 #include "ffxii_mod.h"
 #include "luau_mods.h"
 #include "mod_index.h"
+#if FFXII_HAVE_WASMTIME
+#include "wasm_mods.h"
+#endif
 
 namespace ffxii::modlab {
 namespace {
@@ -215,7 +218,7 @@ Timing Time(int t, const RunOptions& opt, const uint64_t* want) {
 struct Entry {
   std::string key, id, name, language, runtime;
   std::vector<std::string> files;  // host paths
-  bool script = false, native_code = false;
+  bool script = false, native_code = false, wasm = false;
   std::string mod_dir;
 };
 
@@ -267,6 +270,22 @@ Lab Discover(const std::string& dir) {
       e.runtime = "Luau interpreter";
       e.native_code = false;
       lab.entries.push_back(e);
+    }
+    if (!m->wasm.empty()) {
+#if FFXII_HAVE_WASMTIME
+      Entry e;
+      e.key = m->id;
+      e.id = m->id;
+      e.name = m->name;
+      e.language = m->language.empty() ? "WebAssembly" : m->language;
+      e.runtime = std::string("Wasmtime ") + wasm::RuntimeVersion();
+      e.wasm = true;
+      e.mod_dir = m->root;
+      for (const auto& f : m->wasm) e.files.push_back(m->root + "/" + f);
+      lab.entries.push_back(e);
+#else
+      lab.errors.push_back(m->id + ": WebAssembly modules need a build with Wasmtime");
+#endif
     }
   }
   return lab;
@@ -449,11 +468,19 @@ std::string RunJson(const std::string& dir, const RunOptions& opt) {
     bool ok = true;
     std::shared_ptr<luau::Mod> script;
     const auto l0 = std::chrono::steady_clock::now();
+#if FFXII_HAVE_WASMTIME
+    std::shared_ptr<wasm::Mod> wmod;
+#endif
     if (e.script) {
       luau::Options lo;
       lo.native = e.native_code;
       script = luau::Load(api, e.files, lo, err);
       ok = script != nullptr;
+    } else if (e.wasm) {
+#if FFXII_HAVE_WASMTIME
+      wmod = wasm::Load(api, e.files, wasm::Options{}, err);  // stand-in memory: no address check
+      ok = wmod != nullptr;
+#endif
     } else {
       for (const auto& f : e.files) {
         void* lib = OpenLib(f, err);
@@ -486,6 +513,9 @@ std::string RunJson(const std::string& dir, const RunOptions& opt) {
     o << "]}";
     ResetChains();
     luau::Unload(script);
+#if FFXII_HAVE_WASMTIME
+    wasm::Unload(wmod);
+#endif
   }
   const double secs =
       std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();

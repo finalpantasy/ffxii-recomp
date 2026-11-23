@@ -25,6 +25,9 @@
 
 #include "ffxii_mod.h"
 #include "luau_mods.h"
+#if FFXII_HAVE_WASMTIME
+#include "wasm_mods.h"
+#endif
 #include "mod_index.h"
 #include "runtime/env.h"
 #include "runtime/platform.h"
@@ -125,6 +128,21 @@ uint64_t ApiCall(ffxii_cpu* cpu, uint64_t va, const uint64_t* a, uint32_t n) {
     default: return recomp::CallGuest(c, va, {a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7]});
   }
 }
+
+// Every guest page of [va, va + len) is committed (and writable).
+bool GuestRange(uint64_t va, uint64_t len, bool write) {
+  if (len == 0) return true;
+  if (va + len < va) return false;
+  const recomp::GuestMemory& mem = recomp::g_proc->mem;
+  constexpr uint64_t kPage = recomp::GuestMemory::kPageSize;
+  for (uint64_t p = va & ~(kPage - 1); p < va + len; p += kPage) {
+    if (!mem.IsCommitted(p)) return false;
+    if (write && !(uint8_t(mem.QueryProt(p)) & uint8_t(recomp::Prot::W))) return false;
+  }
+  return true;
+}
+[[maybe_unused]] bool GuestReadable(uint64_t va, uint64_t len) { return GuestRange(va, len, false); }
+[[maybe_unused]] bool GuestWritable(uint64_t va, uint64_t len) { return GuestRange(va, len, true); }
 
 void ApiLog(const ffxii_api* api, const char* msg) {
   std::fprintf(stderr, "[mod %s] %s\n", api && api->mod_id ? api->mod_id : "?", msg ? msg : "");
@@ -246,11 +264,24 @@ void LoadNativeModules() {
                    lopt.native && luau::NativeSupported() ? " (native code)" : " (interpreter)",
                    ok ? "" : " failed: ", err.c_str());
     }
-    // WebAssembly modules are declared and checked by the index now; this
-    // build has no WASM runtime yet, so say so instead of skipping silently.
-    if (!m.wasm.empty())
+    // WebAssembly modules are sandboxed like scripts.
+    if (!m.wasm.empty()) {
+#if FFXII_HAVE_WASMTIME
+      if (!api) api = ApiFor(m);
+      std::vector<std::string> files;
+      for (const std::string& rel : m.wasm) files.push_back(m.root + "/" + rel);
+      wasm::Options wopt;
+      wopt.readable = GuestReadable;
+      wopt.writable = GuestWritable;
+      std::string err;
+      const bool ok = wasm::Load(api, files, wopt, err) != nullptr;
+      std::fprintf(stderr, "[wasm] %s: %zu modules (Wasmtime %s)%s%s\n", m.id.c_str(), files.size(),
+                   wasm::RuntimeVersion(), ok ? "" : " failed: ", err.c_str());
+#else
       std::fprintf(stderr, "[wasm] %s: %zu modules not loaded (no WASM runtime in this build)\n",
                    m.id.c_str(), m.wasm.size());
+#endif
+    }
   }
 }
 

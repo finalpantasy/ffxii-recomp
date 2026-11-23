@@ -54,6 +54,30 @@ target_include_directories(ffxii_luau_mods PUBLIC include)
 target_compile_features(ffxii_luau_mods PUBLIC cxx_std_20)
 target_link_libraries(ffxii_luau_mods PUBLIC Luau.VM Luau.Compiler Luau.CodeGen)
 
+# Wasmtime (Apache-2.0 WITH LLVM-exception) runs WebAssembly mods
+# (src/wasm_mods.cpp): FFXII_WASMTIME_DIR is an unpacked release C API
+# (include/, lib/libwasmtime.a). Empty: no WASM runtime, and declared
+# modules are reported as not loaded.
+set(FFXII_WASMTIME_DIR "" CACHE PATH "Wasmtime C API release folder (empty: build without WASM mods)")
+if(FFXII_WASMTIME_DIR)
+    add_library(wasmtime_c STATIC IMPORTED)
+    set_target_properties(wasmtime_c PROPERTIES
+        IMPORTED_LOCATION "${FFXII_WASMTIME_DIR}/lib/libwasmtime.a"
+        INTERFACE_INCLUDE_DIRECTORIES "${FFXII_WASMTIME_DIR}/include"
+        INTERFACE_COMPILE_DEFINITIONS "LIBWASM_STATIC")
+    if(WIN32)
+        set_property(TARGET wasmtime_c PROPERTY INTERFACE_LINK_LIBRARIES
+            ws2_32 bcrypt advapi32 userenv ntdll ole32 oleaut32 shell32 synchronization)
+    else()
+        set_property(TARGET wasmtime_c PROPERTY INTERFACE_LINK_LIBRARIES pthread dl m)
+    endif()
+    add_library(ffxii_wasm_mods STATIC src/wasm_mods.cpp)
+    target_include_directories(ffxii_wasm_mods PUBLIC include)
+    target_compile_features(ffxii_wasm_mods PUBLIC cxx_std_20)
+    target_link_libraries(ffxii_wasm_mods PUBLIC wasmtime_c)
+    target_compile_definitions(ffxii_wasm_mods PUBLIC FFXII_HAVE_WASMTIME=1)
+endif()
+
 # Mod lab (src/mod_lab.h): the page, the runner and the lab mods in
 # bin/modlab (examples/modlab: the same mod in C, C++ and Luau).
 set(FFXII_LAB_SOURCES src/mod_lab.cpp src/mod_lab_server.cpp)
@@ -84,6 +108,19 @@ add_custom_command(TARGET ffxii_modlab POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/examples/modlab/lab-cpp/mod.ini" "${FFXII_LAB_DIR}/lab-cpp/mod.ini"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/examples/modlab/lab-luau/mod.ini" "${FFXII_LAB_DIR}/lab-luau/mod.ini"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/examples/modlab/lab-luau/lab.luau" "${FFXII_LAB_DIR}/lab-luau/lab.luau")
+# The WebAssembly lab mod: lab.c built with clang's wasm32 target.
+if(TARGET ffxii_wasm_mods AND CMAKE_C_COMPILER_ID MATCHES "Clang")
+    target_link_libraries(ffxii_modlab PRIVATE ffxii_wasm_mods)
+    set(FFXII_LAB_WASM "${FFXII_LAB_DIR}/lab-wasm/lab.wasm")
+    add_custom_command(OUTPUT "${FFXII_LAB_WASM}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${FFXII_LAB_DIR}/lab-wasm"
+        COMMAND ${CMAKE_C_COMPILER} --target=wasm32 -O2 -nostdlib -Wl,--no-entry -Wl,--export-dynamic
+            -I "${CMAKE_CURRENT_SOURCE_DIR}/include" "${CMAKE_CURRENT_SOURCE_DIR}/examples/modlab/lab-wasm/lab.c" -o "${FFXII_LAB_WASM}"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/examples/modlab/lab-wasm/mod.ini" "${FFXII_LAB_DIR}/lab-wasm/mod.ini"
+        DEPENDS examples/modlab/lab-wasm/lab.c examples/modlab/lab-wasm/mod.ini include/ffxii_wasm.h examples/modlab/lab_targets.h)
+    add_custom_target(ffxii_lab_wasm DEPENDS "${FFXII_LAB_WASM}")
+    add_dependencies(ffxii_modlab ffxii_lab_wasm)
+endif()
 
 if(EXISTS "${FFXII_GENERATED_DIR}/table.cpp")
     recomp_add_lifted(ffxii_lifted "${FFXII_GENERATED_DIR}" src/mods.cpp src/mod_index.cpp ${FFXII_TEXT_SOURCES} src/probe.cpp src/frame_rate.cpp src/watch.cpp src/cbscan.cpp src/direct_hooks.cpp)
@@ -91,6 +128,9 @@ if(EXISTS "${FFXII_GENERATED_DIR}/table.cpp")
     add_dependencies(ffxii_recomp ffxii_modlab)
     target_include_directories(ffxii_recomp PRIVATE include)
     target_link_libraries(ffxii_recomp PRIVATE ffxii_lifted ZLIB::ZLIB recomp_win32 recomp_ucrt recomp_dinput8 recomp_xinput recomp_dbghelp recomp_steam recomp_dxgi recomp_d3d11 recomp_d3dcompiler ffxii_luau_mods)
+    if(TARGET ffxii_wasm_mods)
+        target_link_libraries(ffxii_recomp PRIVATE ffxii_wasm_mods)
+    endif()
     if(WIN32)
         target_link_libraries(ffxii_recomp PRIVATE ws2_32 shell32)
     endif()

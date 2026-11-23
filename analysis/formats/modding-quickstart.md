@@ -55,13 +55,21 @@ When the index is built, the recomp reads each patched or contested file from th
 
 The report (`mods-report.txt`, `--mods-list`) has a `merge <path>` block for each merged file. A line naming a record that does not exist or a field past the record's end is skipped and reported. `--mods-list` exits 1 on a patch line it could not apply.
 
-## WebAssembly modules (declared only)
+## WebAssembly modules
 
-`wasm = a.wasm, lib/b.wasm` in `mod.ini` declares sandboxed WebAssembly modules
-(paths inside the mod folder). The index checks that each file exists and lists
-it in `mods-report.txt` and `--mods-list`, which exits 1 when one is missing.
-This build has no WASM runtime yet, so the game logs `[wasm] <id>: N modules
-not loaded` and runs without them.
+`wasm = a.wasm, lib/b.wasm` in `mod.ini` loads sandboxed WebAssembly modules (paths inside the mod folder; a `.wat` text file also works). The index checks that each file exists and lists it in `mods-report.txt` and `--mods-list`, which exits 1 when one is missing. The game runs the modules in Wasmtime 51, compiled to native code at load, and logs `[wasm] <id>: N modules (Wasmtime 51.0.0)`. A build configured without `FFXII_WASMTIME_DIR` logs `not loaded` instead and runs without them.
+
+Write a module in C with `include/ffxii_wasm.h` and build it with clang's wasm32 target (no libc needed):
+
+```
+clang --target=wasm32 -O2 -nostdlib -Wl,--no-entry -Wl,--export-dynamic -I include mymod.c -o mymod.wasm
+```
+
+`examples/wasm-sample` is a complete mod (`sh build.sh` builds it). The module imports its functions from `ffxii` and nothing else, so it cannot open files, sockets or processes. After loading, the recomp calls the module's `ffxii_init` export (0 means success). A hook is an exported function `(i64, i64, i64, i64) -> ()` that receives rcx, rdx, r8 and r9; `ffxii_hook(va, "name", len)` installs it, and inside it `ffxii_original()` runs the rest of the chain or `ffxii_ret()` returns without it. Registers, stack arguments, xmm floats and `ffxii_call` work as in Luau.
+
+The module keeps its own linear memory. It sees the game only through calls: game memory is reached with `ffxii_read_u8` ... `ffxii_read_f64`, the matching writes and `ffxii_read_bytes`/`ffxii_write_bytes`. Each call checks that the game has the pages mapped (writes also need writable pages). A bad address traps the hook, the log names the address and the function, and the game's function runs as if the hook were absent. Out-of-bounds access to the module's own memory traps the same way. Later calls run the hook again. The game's memory is not mapped into the module directly, because a stray pointer into an unmapped game page would then crash the game instead of trapping.
+
+Verified in game (`win-wasm4.log`, Windows GPU build). The sample hooked the entry point and the window procedure, read the exe's `MZ` header and counted 2,000 window messages. Its deliberate bad read at message 500 trapped only that call. A second module's out-of-bounds read trapped too, and the title screen came up with both modules loaded.
 
 ## Luau scripts
 
@@ -106,5 +114,7 @@ Numbers are Luau doubles, so register and memory values above 2^53 lose their lo
 Flags: `--mod-lab-dir PATH` (mods to test, default `<exe dir>/modlab`), `--mod-lab-port N`, `--no-browser`. `--mod-lab-run` runs once and prints JSON (`--mod-lab-iters N`, `--mod-lab-reps N`, `--mod-lab-only lab-c,lab-luau:native`). Any mod folder with `native` or `scripts` lines that hooks 0x1000, 0x2000 and 0x3000 (`examples/modlab/lab_targets.h`) can be added to the lab folder.
 
 Entering a Luau hook costs about 60 ns on a loaded machine, almost all of it Luau's protected call and C-call machinery, so native code and the interpreter cost the same for short hooks. A hook that reads its argument ten times went from about 330 ns (through `cpu.rcx`) to 106 ns (through the argument). Caching registers in a Lua table was tried and was slower: emptying and walking the table on every call cost more than the C calls it saved.
+
+WebAssembly (`examples/modlab/lab-wasm`, C built to wasm32 by CMake when Wasmtime is configured) runs the same tests through Wasmtime's unchecked call path. With checked calls each hook cost about 440 ns; unchecked calls and host functions brought it to 115-123 ns for the filter and table read and 358 ns for the 32-read loop, against 731 ns (Luau native) and 1,105 ns (Luau interpreter) in the same run (99% machine load, `modlab-wasm2.json`). All results matched.
 
 First results (Ryzen 9 9950X3D2, machine at 100% CPU from other work, 1,000,000 calls, median of 5): game function alone about 2 ns; C and C++ add 3-4 ns for the filter and table read and about 56-59 ns for the loop; Luau adds about 105-136 ns for the filter and table read (native code and interpreter about the same, so the boundary dominates) and 796 ns (native) or 1,190 ns (interpreter) for the loop. All 15 language-test pairs returned correct results.

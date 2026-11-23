@@ -11,3 +11,4 @@ analysis/ghidra/
 *.ilk
 *.dmp
 *.keys
+examples/wasm-sample/count.wasm
