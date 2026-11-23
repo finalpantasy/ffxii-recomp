@@ -1,0 +1,516 @@
+# New Game through the fortress opening (gameplay-fortress.txt), then the fight7 battle loop shifted +290 s.
+40 key Return 0.15
+44 key Return 0.15
+48 key Return 0.15
+52 key Return 0.15
+56 key Return 0.15
+60 key Return 0.15
+64 key Return 0.15
+68 key Return 0.15
+72 key Return 0.15
+76 key Return 0.15
+80 key Return 0.15
+84 key Return 0.15
+88 key Return 0.15
+92 key Return 0.15
+96 key Return 0.15
+100 key Return 0.15
+120 key Escape 0.15
+123 key Return 0.15
+126 key Escape 0.15
+129 key Return 0.15
+132 key Escape 0.15
+135 key Return 0.15
+138 key Escape 0.15
+141 key Return 0.15
+144 key Escape 0.15
+147 key Return 0.15
+150 key Escape 0.15
+153 key Return 0.15
+156 key Escape 0.15
+159 key Return 0.15
+162 key Escape 0.15
+165 key Return 0.15
+168 key Escape 0.15
+171 key Return 0.15
+174 key Escape 0.15
+177 key Return 0.15
+180 key Escape 0.15
+183 key Return 0.15
+186 key Escape 0.15
+189 key Return 0.15
+192 key Escape 0.15
+195 key Return 0.15
+198 key Escape 0.15
+201 key Return 0.15
+204 key Escape 0.15
+207 key Return 0.15
+210 key Escape 0.15
+213 key Return 0.15
+216 key Escape 0.15
+219 key Return 0.15
+222 key Escape 0.15
+225 key Return 0.15
+228 key Escape 0.15
+# movement test 9: finish camera tutorial, close Basch's dialog, then move
+233 key Space 0.2
+238 stick right 1 0 8
+248 stick right 0 1 4
+256 pad b 0.3
+260 key Space 0.2
+264 pad b 0.3
+268 stick left 0 1 6
+# after the gate: keyboard, then keep approaching Basch
+276 key D 3
+281 key W 8
+290 pad b 0.3
+293 pad b 0.3
+296 pad b 0.3
+299 pad b 0.3
+302 pad b 0.3
+305 pad b 0.3
+308 pad b 0.3
+311 pad b 0.3
+314 pad b 0.3
+317 pad b 0.3
+320 pad b 0.3
+323 pad b 0.3
+326 pad b 0.3
+329 pad b 0.3
+332 pad b 0.3
+335 pad b 0.3
+338 pad b 0.3
+341 pad b 0.3
+344 pad b 0.3
+# closed loop from the Dalmascan on (conditions: src/probe.cpp)
+348 wait walkto 101.26,162.27,1.2 60
+348.2 wait talk - 8
+348.3 pad b 0.4
+349 wait busy - 5
+349.1 wait advance - 90
+# "Go to the iron gate": arriving starts Basch's Action Icon talk a few seconds later
+350 wait walkto 96.9,161.0,0.8 30
+350.1 wait busy - 10
+350.2 wait advance - 90
+# "Approach the iron gate and press B": face -z into the gate (it stops Reks near z 160.3)
+351 wait walkto 96.8,160.9,0.3 20
+352 wait walkto 96.7,159.9,0.45 15
+352.1 wait talk - 6
+352.2 pad b 0.4
+353 wait busy - 8
+353.1 wait advance - 90
+# second try if the first push came too early
+354 wait walkto 96.8,160.9,0.3 20
+355 wait walkto 96.7,159.9,0.45 15
+355.1 wait talk - 6
+355.2 pad b 0.4
+356 wait busy - 8
+356.1 wait advance - 90
+357 pad b 0.1
+# battle: B opens the menu, picks Attack, confirms the target
+363 pad b 0.3
+365 pad b 0.3
+367 pad b 0.3
+369 pad b 0.3
+371 pad b 0.3
+373 pad b 0.3
+375 pad b 0.3
+377 pad b 0.3
+379 pad b 0.3
+381 pad b 0.3
+383 pad b 0.3
+385 pad b 0.3
+387 pad b 0.3
+389 pad b 0.3
+391 pad b 0.3
+393 pad b 0.3
+395 pad b 0.3
+397 pad b 0.3
+399 pad b 0.3
+401 pad b 0.3
+403 pad b 0.3
+405 pad b 0.3
+407 pad b 0.3
+409 pad b 0.3
+411 pad b 0.3
+413 pad b 0.3
+415 pad b 0.3
+417 pad b 0.3
+419 pad b 0.3
+421 pad b 0.3
+# enemy down ("No Available Targets"): A backs out of the menu. No B in the
+# field from here: B opens the battle menu again.
+# loop: walk north, then B B B (menu, Attack, target) and A A to back out
+# no 'wait advance' in the loop: its first tick taps B, which reopens the battle menu
+423 pad a 0.3
+424.5 pad a 0.3
+426 stick left 0 1 8
+435 pad b 0.3
+436.5 pad b 0.3
+438 pad b 0.3
+440 pad a 0.3
+441.5 pad a 0.3
+443 stick left 0 1 8
+452 pad b 0.3
+453.5 pad b 0.3
+455 pad b 0.3
+457 pad a 0.3
+458.5 pad a 0.3
+460 stick left 0 1 8
+469 pad b 0.3
+470.5 pad b 0.3
+472 pad b 0.3
+474 pad a 0.3
+475.5 pad a 0.3
+477 stick left 0 1 8
+486 pad b 0.3
+487.5 pad b 0.3
+489 pad b 0.3
+491 pad a 0.3
+492.5 pad a 0.3
+494 stick left 0 1 8
+503 pad b 0.3
+504.5 pad b 0.3
+506 pad b 0.3
+508 pad a 0.3
+509.5 pad a 0.3
+511 stick left 0 1 8
+520 pad b 0.3
+521.5 pad b 0.3
+523 pad b 0.3
+525 pad a 0.3
+526.5 pad a 0.3
+528 stick left 0 1 8
+537 pad b 0.3
+538.5 pad b 0.3
+540 pad b 0.3
+542 pad a 0.3
+543.5 pad a 0.3
+545 stick left 0 1 8
+554 pad b 0.3
+555.5 pad b 0.3
+557 pad b 0.3
+559 pad a 0.3
+560.5 pad a 0.3
+562 stick left 0 1 8
+571 pad b 0.3
+572.5 pad b 0.3
+574 pad b 0.3
+576 pad a 0.3
+577.5 pad a 0.3
+579 stick left 0 1 8
+588 pad b 0.3
+589.5 pad b 0.3
+591 pad b 0.3
+593 pad a 0.3
+594.5 pad a 0.3
+596 stick left 0 1 8
+605 pad b 0.3
+606.5 pad b 0.3
+608 pad b 0.3
+610 pad a 0.3
+611.5 pad a 0.3
+613 stick left 0 1 8
+622 pad b 0.3
+623.5 pad b 0.3
+625 pad b 0.3
+627 pad a 0.3
+628.5 pad a 0.3
+630 stick left 0 1 8
+639 pad b 0.3
+640.5 pad b 0.3
+642 pad b 0.3
+644 pad a 0.3
+645.5 pad a 0.3
+647 stick left 0 1 8
+656 pad b 0.3
+657.5 pad b 0.3
+659 pad b 0.3
+661 pad a 0.3
+662.5 pad a 0.3
+664 stick left 0 1 8
+673 pad b 0.3
+674.5 pad b 0.3
+676 pad b 0.3
+678 pad a 0.3
+679.5 pad a 0.3
+681 stick left 0 1 8
+690 pad b 0.3
+691.5 pad b 0.3
+693 pad b 0.3
+695 pad a 0.3
+696.5 pad a 0.3
+698 stick left 0 1 8
+707 pad b 0.3
+708.5 pad b 0.3
+710 pad b 0.3
+712 pad a 0.3
+713.5 pad a 0.3
+715 stick left 0 1 8
+724 pad b 0.3
+725.5 pad b 0.3
+727 pad b 0.3
+729 pad a 0.3
+730.5 pad a 0.3
+732 stick left 0 1 8
+741 pad b 0.3
+742.5 pad b 0.3
+744 pad b 0.3
+746 pad a 0.3
+747.5 pad a 0.3
+749 stick left 0 1 8
+758 pad b 0.3
+759.5 pad b 0.3
+761 pad b 0.3
+763 pad a 0.3
+764.5 pad a 0.3
+766 stick left 0 1 8
+775 pad b 0.3
+776.5 pad b 0.3
+778 pad b 0.3
+780 pad a 0.3
+781.5 pad a 0.3
+783 stick left 0 1 8
+792 pad b 0.3
+793.5 pad b 0.3
+795 pad b 0.3
+797 pad a 0.3
+798.5 pad a 0.3
+800 stick left 0 1 8
+809 pad b 0.3
+810.5 pad b 0.3
+812 pad b 0.3
+814 pad a 0.3
+815.5 pad a 0.3
+817 stick left 0 1 8
+826 pad b 0.3
+827.5 pad b 0.3
+829 pad b 0.3
+831 pad a 0.3
+832.5 pad a 0.3
+834 stick left 0 1 8
+843 pad b 0.3
+844.5 pad b 0.3
+846 pad b 0.3
+848 pad a 0.3
+849.5 pad a 0.3
+851 stick left 0 1 8
+860 pad b 0.3
+861.5 pad b 0.3
+863 pad b 0.3
+865 pad a 0.3
+866.5 pad a 0.3
+868 stick left 0 1 8
+877 pad b 0.3
+878.5 pad b 0.3
+880 pad b 0.3
+882 pad a 0.3
+883.5 pad a 0.3
+885 stick left 0 1 8
+894 pad b 0.3
+895.5 pad b 0.3
+897 pad b 0.3
+899 pad a 0.3
+900.5 pad a 0.3
+902 stick left 0 1 8
+911 pad b 0.3
+912.5 pad b 0.3
+914 pad b 0.3
+916 pad a 0.3
+917.5 pad a 0.3
+919 stick left 0 1 8
+928 pad b 0.3
+929.5 pad b 0.3
+931 pad b 0.3
+933 pad a 0.3
+934.5 pad a 0.3
+936 stick left 0 1 8
+945 pad b 0.3
+946.5 pad b 0.3
+948 pad b 0.3
+950 pad a 0.3
+951.5 pad a 0.3
+953 stick left 0 1 8
+962 pad b 0.3
+963.5 pad b 0.3
+965 pad b 0.3
+967 pad a 0.3
+968.5 pad a 0.3
+970 stick left 0 1 8
+979 pad b 0.3
+980.5 pad b 0.3
+982 pad b 0.3
+984 pad a 0.3
+985.5 pad a 0.3
+987 stick left 0 1 8
+996 pad b 0.3
+997.5 pad b 0.3
+999 pad b 0.3
+1001 pad a 0.3
+1002.5 pad a 0.3
+1004 stick left 0 1 8
+1013 pad b 0.3
+1014.5 pad b 0.3
+1016 pad b 0.3
+1018 pad a 0.3
+1019.5 pad a 0.3
+1021 stick left 0 1 8
+1030 pad b 0.3
+1031.5 pad b 0.3
+1033 pad b 0.3
+1035 pad a 0.3
+1036.5 pad a 0.3
+1038 stick left 0 1 8
+1047 pad b 0.3
+1048.5 pad b 0.3
+1050 pad b 0.3
+1052 pad a 0.3
+1053.5 pad a 0.3
+1055 stick left 0 1 8
+1064 pad b 0.3
+1065.5 pad b 0.3
+1067 pad b 0.3
+1069 pad a 0.3
+1070.5 pad a 0.3
+1072 stick left 0 1 8
+1081 pad b 0.3
+1082.5 pad b 0.3
+1084 pad b 0.3
+1086 pad a 0.3
+1087.5 pad a 0.3
+1089 stick left 0 1 8
+1098 pad b 0.3
+1099.5 pad b 0.3
+1101 pad b 0.3
+1103 pad a 0.3
+1104.5 pad a 0.3
+1106 stick left 0 1 8
+1115 pad b 0.3
+1116.5 pad b 0.3
+1118 pad b 0.3
+1120 pad a 0.3
+1121.5 pad a 0.3
+1123 stick left 0 1 8
+1132 pad b 0.3
+1133.5 pad b 0.3
+1135 pad b 0.3
+1137 pad a 0.3
+1138.5 pad a 0.3
+1140 stick left 0 1 8
+1149 pad b 0.3
+1150.5 pad b 0.3
+1152 pad b 0.3
+1154 pad a 0.3
+1155.5 pad a 0.3
+1157 stick left 0 1 8
+1166 pad b 0.3
+1167.5 pad b 0.3
+1169 pad b 0.3
+1171 pad a 0.3
+1172.5 pad a 0.3
+1174 stick left 0 1 8
+1183 pad b 0.3
+1184.5 pad b 0.3
+1186 pad b 0.3
+1188 pad a 0.3
+1189.5 pad a 0.3
+1191 stick left 0 1 8
+1200 pad b 0.3
+1201.5 pad b 0.3
+1203 pad b 0.3
+1205 pad a 0.3
+1206.5 pad a 0.3
+1208 stick left 0 1 8
+1217 pad b 0.3
+1218.5 pad b 0.3
+1220 pad b 0.3
+1222 pad a 0.3
+1223.5 pad a 0.3
+1225 stick left 0 1 8
+1234 pad b 0.3
+1235.5 pad b 0.3
+1237 pad b 0.3
+1239 pad a 0.3
+1240.5 pad a 0.3
+1242 stick left 0 1 8
+1251 pad b 0.3
+1252.5 pad b 0.3
+1254 pad b 0.3
+1256 pad a 0.3
+1257.5 pad a 0.3
+1259 stick left 0 1 8
+1268 pad b 0.3
+1269.5 pad b 0.3
+1271 pad b 0.3
+1273 pad a 0.3
+1274.5 pad a 0.3
+1276 stick left 0 1 8
+1285 pad b 0.3
+1286.5 pad b 0.3
+1288 pad b 0.3
+1290 pad a 0.3
+1291.5 pad a 0.3
+1293 stick left 0 1 8
+1302 pad b 0.3
+1303.5 pad b 0.3
+1305 pad b 0.3
+1307 pad a 0.3
+1308.5 pad a 0.3
+1310 stick left 0 1 8
+1319 pad b 0.3
+1320.5 pad b 0.3
+1322 pad b 0.3
+1324 pad a 0.3
+1325.5 pad a 0.3
+1327 stick left 0 1 8
+1336 pad b 0.3
+1337.5 pad b 0.3
+1339 pad b 0.3
+1341 pad a 0.3
+1342.5 pad a 0.3
+1344 stick left 0 1 8
+1353 pad b 0.3
+1354.5 pad b 0.3
+1356 pad b 0.3
+1358 pad a 0.3
+1359.5 pad a 0.3
+1361 stick left 0 1 8
+1370 pad b 0.3
+1371.5 pad b 0.3
+1373 pad b 0.3
+1375 pad a 0.3
+1376.5 pad a 0.3
+1378 stick left 0 1 8
+1387 pad b 0.3
+1388.5 pad b 0.3
+1390 pad b 0.3
+1392 pad a 0.3
+1393.5 pad a 0.3
+1395 stick left 0 1 8
+1404 pad b 0.3
+1405.5 pad b 0.3
+1407 pad b 0.3
+1409 pad a 0.3
+1410.5 pad a 0.3
+1412 stick left 0 1 8
+1421 pad b 0.3
+1422.5 pad b 0.3
+1424 pad b 0.3
+1426 pad a 0.3
+1427.5 pad a 0.3
+1429 stick left 0 1 8
+1438 pad b 0.3
+1439.5 pad b 0.3
+1441 pad b 0.3
+1443 pad a 0.3
+1444.5 pad a 0.3
+1446 stick left 0 1 8
+1455 pad b 0.3
+1456.5 pad b 0.3
+1458 pad b 0.3
+1460 pad a 0.3
+1461.5 pad a 0.3
+1463 stick left 0 1 8
+1472 pad b 0.3
+1473.5 pad b 0.3
+1475 pad b 0.3
