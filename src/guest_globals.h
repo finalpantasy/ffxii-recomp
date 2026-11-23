@@ -66,6 +66,11 @@ inline constexpr Global<Mat4> kCameraWorld{0x20975A0};
 inline constexpr Global<Mat4> kRenderView{0x2AED580};
 inline constexpr Global<Mat4> kRenderView2{0x2AED5C0};
 
+// --- Input ---
+// Pad buttons as 0x46DB40 returns them, in PS2 bit order (R3 = 0x0004
+// makes 0x32C910 run the camera reset 0x32DC00).
+inline constexpr Global<uint16_t> kPadButtons{0x2AD9E18};
+
 // --- Archive ---
 // The VBF archive manager singleton (created by 0x19B190).
 inline constexpr Global<uint64_t> kVbfManager{0x1F81110};

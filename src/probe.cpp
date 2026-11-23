@@ -123,12 +123,11 @@ namespace recomp::ffxii {
 // the frame count differs. Called once per limited frame.
 void SpeedLog() {
   // FFXII_PADLOG=1: log each change of the pad word that 0x46DB40 returns
-  // (0x2AD9E18; bit 4 makes 0x32C910 run the camera reset 0x32DC00).
+  // (guest_globals.h kPadButtons).
   static const bool pad_on = recomp::Env("PADLOG") != nullptr;
   if (pad_on && recomp::g_guest_base) {
     static uint16_t prev = 0;
-    uint16_t w;
-    std::memcpy(&w, recomp::g_guest_base + 0x2AD9E18, 2);
+    const uint16_t w = ::ffxii::guest::kPadButtons.Get();
     if (w != prev) {
       std::fprintf(stderr, "[pad] 0x%04x -> 0x%04x ticks %u\n", prev, w, ::ffxii::guest::kTicks.Get());
       prev = w;
