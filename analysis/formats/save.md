@@ -34,7 +34,8 @@ save offset 0x4E68C (VA 0x21B290C). Records 0-26 hold the party and guests,
 
 | Offset | Type | Meaning |
 |---|---|---|
-| +0x36 | u8 | Attack Power with the current weapon, capped at 255 |
+| +0x36 | u8 | Attack Power: weapon + off-hand attack (+0x1A in section 13), capped at 255 |
+| +0x58 | u16 x5 | Equipped item ids: weapon, off-hand, head, body, accessory (0xFFFF empty) |
 
 Evidence: a New Game started under a mod that sets every weapon's attack
 (battle_pack section 13 +0x1A) to 250 saved 250 (255 for three records) here;
@@ -63,11 +64,19 @@ after each; `examples/luau-cached-attack/loadprobe.luau`). A Luau hook on
 made Reks's first hit 949 on the old save, with no table mod
 (`examples/luau-cached-attack/atk.luau`, `win-lhook2.log`).
 
-Still open for a real "recompute on load" mod: where a record names its
-equipped weapon, where the game keeps its pointer to the loaded equipment
-table (it sits on the heap, VA 0xE081168 in one run), and the formula (three
-records saved 255 under the attack-250 mod, so something is added before the
-cap).
+The cached byte is min(255, weapon +0x1A + off-hand +0x1A), from battle_pack
+section 13. The record names the weapon at +0x58 and the off-hand at +0x5A (u16
+item ids, 0xFFFF empty; table index = id - 0x1000). Ammunition in the off-hand
+adds its own attack (1 for the early arrows and shot); shields add 0. The formula
+matches all 80 records of the Inner Ward save, and in game a mod recomputing it
+on vanilla data changed 0 values (`win-recomp4.log`).
+
+The loaded battle_pack's base is the global 0x208E680 (set by 0x2368D0, read in 45
+places). Once loaded, its section table holds absolute addresses instead of
+file offsets, so section 13 is `u32 [base + 0x38]`. It is already loaded when
+0x233C10 runs. `examples/luau-recompute-attack` recomputes the byte there: with
+the attack-250 table mod, Reks hit for 904 on the old save (`win-recomp3.log`),
+where the table mod alone left his hits at 39-43.
 
 ## Tools
 
