@@ -4,7 +4,7 @@
 // Layout under the mods root:
 //   <root>/<mod folder>/mod.ini          a mod (see ParseModIni)
 //   <root>/<mod folder>/files/<path>     files that replace or add archive paths
-//   <root>/<mod folder>/text/<path>.txt  text patches for archive text files
+//   <root>/<mod folder>/patch/<path>.txt patches (strings, data fields) for archive files
 //                                        (text_merge.h)
 //   <root>/<path>                        legacy loose files (implicit mod "loose")
 // A top-level folder without mod.ini belongs to the legacy loose tree.
@@ -44,7 +44,7 @@ struct ModInfo {
   std::vector<std::string> native;  // native module DLLs, relative to root
   std::string root;     // host folder of the mod (holds mod.ini)
   std::string dir;      // host folder holding the files
-  std::string text_dir; // host folder holding text patches (empty for "loose")
+  std::string text_dir; // host folder holding patches (empty for "loose")
   size_t files = 0;     // paths this mod supplies (winning or not)
   size_t won = 0;       // paths this mod actually serves
   size_t patches = 0;   // text patch files

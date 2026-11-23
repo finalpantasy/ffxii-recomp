@@ -74,7 +74,7 @@ ModTextMerges MergeModText(const mods::Index& ix, vbf::Archive& archive) {
       continue;
     }
     if (Detect(base) == Kind::kNone) {
-      if (patched) problem("not a text file this tool can patch; patch not applied");
+      if (patched) problem("not a text or data file this tool can patch; patch not applied");
       continue;  // a clash between whole binary files: the winner serves
     }
     std::vector<size_t> order;
@@ -88,7 +88,7 @@ ModTextMerges MergeModText(const mods::Index& ix, vbf::Archive& archive) {
       problem(err);
       continue;
     }
-    rep << "  text " << path << ": " << mr.changed << " units changed by";
+    rep << "  merge " << path << ": " << mr.changed << " units changed by";
     for (const auto& s : sources) rep << " " << s.mod;
     rep << " (" << KindName(Detect(base)) << ")\n";
     for (const auto& n : mr.notes) {

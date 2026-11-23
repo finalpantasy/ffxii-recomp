@@ -214,6 +214,30 @@ bool St2Header(const Bytes& d, size_t& sec, size_t& tab, size_t& n) {
   return n == U32(d, 4) && tab + 4 + 4 * (n + 1) <= d.size();
 }
 
+// Fixed-size records from 0x20: count at 4, record size at 8, before any text
+// section. Data tables (weapons, items, abilities) are st2e files with only
+// records.
+bool St2Records(const Bytes& d, size_t& count, size_t& size) {
+  if (d.size() < 0x20 || std::memcmp(d.data(), "st2e", 4) != 0) return false;
+  count = U32(d, 4);
+  size = U32(d, 8);
+  if (count == 0 || size == 0 || U32(d, 0xC) != 0x20) return false;
+  const size_t sec = U32(d, 0x14);
+  return 0x20 + count * size <= (sec ? sec : d.size());
+}
+
+void RecordUnits(const Bytes& d, const std::string& prefix, std::map<std::string, Bytes>& out) {
+  size_t count, size;
+  if (!St2Records(d, count, size)) return;
+  for (size_t i = 0; i < count; ++i)
+    out[prefix + "r " + std::to_string(i)] = Bytes(d.begin() + 0x20 + i * size, d.begin() + 0x20 + (i + 1) * size);
+}
+
+bool IsRecordKey(const std::string& key) { return key.size() > 2 && key[0] == 'r' && key[1] == ' '; }
+
+// Writes "r <i>" units into d in place (records never change size).
+bool PutRecords(Bytes& d, const std::map<std::string, Bytes>& rep, std::string& err);
+
 bool St2Read(const Bytes& d, std::vector<Unit>& units) {
   size_t sec, tab, n;
   if (!St2Header(d, sec, tab, n)) return false;
@@ -440,7 +464,29 @@ bool RebuildWords(const Bytes& d, const RawUnits& rep, Bytes& out, std::string& 
   return true;
 }
 
-bool RebuildStrings(Kind kind, const Bytes& d, const RawUnits& rep, Bytes& out, std::string& err) {
+bool PutRecords(Bytes& d, const std::map<std::string, Bytes>& rep, std::string& err) {
+  size_t count = 0, size = 0;
+  const bool has = St2Records(d, count, size);
+  for (const auto& [key, raw] : rep) {
+    std::vector<std::string> p;
+    size_t i;
+    if (!ParseKey(key, p) || p.size() != 2 || p[0] != "r" || !ToIndex(p[1], i))
+      return err = "bad record key '" + key + "'", false;
+    if (!has || i >= count) return err = "record " + p[1] + " out of range", false;
+    if (raw.size() != size) return err = "record " + p[1] + " must stay " + std::to_string(size) + " bytes", false;
+    std::copy(raw.begin(), raw.end(), d.begin() + 0x20 + i * size);
+  }
+  return true;
+}
+
+bool RebuildStrings(Kind kind, const Bytes& d0, const RawUnits& rep0, Bytes& out, std::string& err) {
+  // Records first, in place; then the strings, if any changed.
+  RawUnits recs, rep;
+  for (const auto& kv : rep0) (IsRecordKey(kv.first) ? recs : rep).insert(kv);
+  Bytes d = d0;
+  if (!recs.empty() && (kind != Kind::kSt2e || !PutRecords(d, recs, err)))
+    return err.empty() ? (err = "this file has no records", false) : false;
+  if (rep.empty() && kind == Kind::kSt2e) return out = std::move(d), true;
   std::map<size_t, Bytes> idx;
   for (const auto& [key, raw] : rep) {
     std::vector<std::string> p;
@@ -467,10 +513,14 @@ bool RebuildPack(const Bytes& d, const RawUnits& rep, Bytes& out, std::string& e
     per[k][sub] = raw;
   }
   for (auto& [k, r] : per) {
-    const Kind sk = SectionKind(secs[k]);
-    if (sk == Kind::kNone) return err = "section " + std::to_string(k) + " holds no text", false;
+    const bool st2 = secs[k].size() >= 4 && std::memcmp(secs[k].data(), "st2e", 4) == 0;
+    const Kind sk = st2 ? Kind::kSt2e : SectionKind(secs[k]);
+    if (sk == Kind::kNone) return err = "section " + std::to_string(k) + " holds no text or records", false;
+    // A records-only change keeps the section's bytes (and padding) as they are.
+    const bool strings = std::any_of(r.begin(), r.end(), [](const auto& kv) { return !IsRecordKey(kv.first); });
     Bytes rebuilt;
-    if (!RebuildKind(sk, Trim(secs[k]), r, rebuilt, err)) return err = "section " + std::to_string(k) + ": " + err, false;
+    if (!RebuildKind(sk, strings ? Trim(secs[k]) : secs[k], r, rebuilt, err))
+      return err = "section " + std::to_string(k) + ": " + err, false;
     secs[k] = std::move(rebuilt);
   }
   out = PackBuild(secs);
@@ -488,6 +538,7 @@ bool RebuildKind(Kind kind, const Bytes& d, const RawUnits& rep, Bytes& out, std
 }
 
 void UnitsKind(Kind kind, const Bytes& d, const std::string& prefix, std::map<std::string, Bytes>& out) {
+  if (kind == Kind::kSt2e) RecordUnits(d, prefix, out);
   if (kind == Kind::kEbp || kind == Kind::kSt2e) {
     std::vector<Unit> u;
     uint32_t t = 0;
@@ -503,8 +554,11 @@ void UnitsKind(Kind kind, const Bytes& d, const std::string& prefix, std::map<st
     std::vector<Bytes> secs;
     if (!PackSections(d, secs)) return;
     for (size_t k = 0; k < secs.size(); ++k) {
-      const Kind sk = SectionKind(secs[k]);
-      if (sk != Kind::kNone) UnitsKind(sk, Trim(secs[k]), prefix + "p " + std::to_string(k) + " ", out);
+      const std::string pre = prefix + "p " + std::to_string(k) + " ";
+      if (secs[k].size() >= 4 && std::memcmp(secs[k].data(), "st2e", 4) == 0)
+        UnitsKind(Kind::kSt2e, secs[k], pre, out);
+      else if (SectionKind(secs[k]) == Kind::kWords)
+        UnitsKind(Kind::kWords, Trim(secs[k]), pre, out);
     }
   }
 }
@@ -515,8 +569,8 @@ Kind Detect(const Bytes& d) {
   if (d.size() >= 4 && std::memcmp(d.data(), "EBP2", 4) == 0)
     return d.size() >= kEbpHeaderEnd && U32(d, kEbpTextSlot) ? Kind::kEbp : Kind::kNone;
   if (d.size() >= 4 && std::memcmp(d.data(), "st2e", 4) == 0) {
-    size_t sec, tab, n;
-    return St2Header(d, sec, tab, n) ? Kind::kSt2e : Kind::kNone;
+    size_t sec, tab, n, count, size;
+    return St2Header(d, sec, tab, n) || St2Records(d, count, size) ? Kind::kSt2e : Kind::kNone;
   }
   if (IsWords(d)) return Kind::kWords;
   std::vector<Bytes> secs;
@@ -580,6 +634,8 @@ bool EncodeUnits(const Bytes& d, const Replacements& rep, RawUnits& out, std::st
     ParseKey(key, p);
     std::string norm;
     for (const auto& x : p) norm += (norm.empty() ? "" : " ") + x;
+    if (IsRecordKey(p[0] == "p" && p.size() > 2 ? norm.substr(norm.find(' ', 2) + 1) : norm))
+      return err = "'" + norm + "' is a data record; use a field operation", false;
     const auto it = units.find(norm);
     if (it == units.end()) return err = "no unit '" + key + "' in this " + KindName(k) + " file", false;
     // The unit's own container: a pack section is st2e or a word table.

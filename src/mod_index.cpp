@@ -265,7 +265,7 @@ Index Build(const std::string& root_s, const std::unordered_set<std::string>& di
     }
     if (disabled.count(m.id)) m.enabled = false;
     m.dir = Utf8(d / "files");
-    m.text_dir = Utf8(d / "text");
+    m.text_dir = Utf8(d / "patch");
     m.root = Utf8(d);
     // A declared native module that is not there fails to load later; say
     // so in the report, where launchers see it (--mods-list exits 1).
@@ -282,7 +282,7 @@ Index Build(const std::string& root_s, const std::unordered_set<std::string>& di
     if (ix.mods[i].enabled && fs::is_directory(files, ec)) Collect(files, files, i, cand);
   }
 
-  // Text patches: text/<archive path>.txt.
+  // Patches: patch/<archive path>.txt (strings and data fields).
   std::map<std::string, std::vector<std::pair<size_t, std::string>>> pcand;
   for (size_t i = 0; i < ix.mods.size(); i++) {
     const fs::path text = fs::u8path(ix.mods[i].text_dir);
@@ -291,7 +291,7 @@ Index Build(const std::string& root_s, const std::unordered_set<std::string>& di
     Collect(text, text, i, mine);
     for (auto& [key, list] : mine) {
       if (key.size() < 5 || key.compare(key.size() - 4, 4, ".txt") != 0) {
-        ix.errors.push_back(ix.mods[i].id + ": text/" + key + " is not a .txt patch");
+        ix.errors.push_back(ix.mods[i].id + ": patch/" + key + " is not a .txt patch");
         continue;
       }
       ix.mods[i].patches++;
@@ -361,7 +361,7 @@ std::string Index::Report() const {
     if (m.name != m.id) o << " (" << m.name << ")";
     if (!m.version.empty()) o << " " << m.version;
     o << "  priority " << m.priority << ", " << m.won << " of " << m.files << " files";
-    if (m.patches) o << ", " << m.patches << " text patches";
+    if (m.patches) o << ", " << m.patches << " patches";
     if (!m.off_reason.empty()) o << "  (" << m.off_reason << ")";
     o << "\n";
     for (const auto& n : m.native) o << "        native " << n << "\n";
@@ -375,7 +375,7 @@ std::string Index::Report() const {
   for (const auto& kv : patches) patched.push_back(kv.first);
   std::sort(patched.begin(), patched.end());
   for (const auto& p : patched) {
-    o << "  text patch " << p << ":";
+    o << "  patch " << p << ":";
     for (const auto& e : patches.at(p)) o << " " << mods[e.mod].id;
     o << "\n";
   }

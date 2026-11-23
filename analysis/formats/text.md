@@ -94,6 +94,17 @@ u32 n (71), then n + 1 u32 section offsets. The header, every section and the fi
 - `text_formats_test --mods <dir> <vbf>` on the real archive with two mods: a whole `battle_pack.bin` copy (priority 5) and a patch (priority 10). It reported 11 changed units, one identical and one priority overlap. `ffxii_recomp --mods-list` printed the same report.
 - In game with those two mods (Windows GPU build, Inner Ward save, `fight7.txt`, `win-merge1.log`): the game opened the merged `battle_pack.bin` (281,208 bytes) from memory, and the battle menu read "Attack (mod)" (both mods), "Magicks & Technicks (mod)" (the whole copy) and "Items (patch)" (the patch, which outranks the copy's "Items (mod)"). The run lasted 1,140 s with no fatal.
 
+## Data records and field operations (C++)
+
+`Units` also returns the fixed-size records of every st2e table as `r <i>` units (`p <k> r <i>` in the pack): count at 0x4, size at 0x8, records from 0x20 up to the string section or the end of the file. A table with a string section 0 at 0x14 is a data table; `Detect` accepts it. Records are rewritten in place, so a records-only change keeps the file's size and padding. Text replacements refuse record keys; records change through field operations in patch files (`modding-quickstart.md`, "Patches and merging"). `src/text_merge.cpp` merges records byte by byte, then applies `=?` lines, then relative operations from the lowest-ranked mod up.
+
+Checks on 2026-11-22:
+
+- All 90 files of `test_battle/us/binaryfile` (29 with text, 12,109 records in all) rebuilt byte for byte. Flipping the first byte of the first and last record of each file changed only those records.
+- Synthetic merges in `text_formats_test`: two mods setting different bytes of one record both apply; the same byte goes to the higher rank; `+=`, `*=` and `-=` from three mods apply lowest rank first; `=?` drops after another mod's set; f32 and bit operations; integer results saturate; a missing record and a field past the record's end are reported and skipped.
+- `--mods-list` on the real archive with two mods (attack ×8 on section 13 records 0-40, and +1 on record 1) reported 41 changed records and `p 13 r 1 0x1A: plusone, then strong (operation)`.
+- In game with those two mods (Inner Ward save, `fight7.txt`, `win-stat1.log`, 600 s, no fatal): the game opened the merged `battle_pack.bin` (281,128 bytes) from memory. Damage in the corridor fights still read 20 to 41, so the change had no visible effect. Either Reks's weapon is not among records 0-40, 0x1A is not the attack the damage formula uses, or the game takes weapon stats from somewhere else in the prologue. The field meanings in section 13 are guesses until a run shows an effect.
+
 ## Not done
 
 - Edits that change the number of strings or entries.
