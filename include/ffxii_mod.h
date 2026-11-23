@@ -45,6 +45,11 @@
  * project's own wrapper code; for other `replace` functions it runs after
  * the wrapper's code, in place of the lifted body.
  *
+ * C++ modules can use include/ffxii_mod.hpp instead: typed arguments and
+ * guest memory, Hook<VA, fn>() with a next() for the original, Return()
+ * for replacing hooks, printf-style Log and FFXII_MOD_INIT (example:
+ * examples/native-cpp-sample/axis_log.cpp).
+ *
  * Threads. Hooks run on whatever guest thread made the call, so module
  * state shared between calls needs its own locking. Install hooks only in
  * ffxii_mod_init.

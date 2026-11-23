@@ -18,6 +18,12 @@ if(WIN32)
     target_include_directories(ffxii_sample_mod PRIVATE include)
     set_target_properties(ffxii_sample_mod PROPERTIES PREFIX "" OUTPUT_NAME sample_mod)
     target_link_options(ffxii_sample_mod PRIVATE -static)
+    # The same through the C++ conveniences (include/ffxii_mod.hpp).
+    add_library(ffxii_axis_log_mod MODULE examples/native-cpp-sample/axis_log.cpp)
+    target_include_directories(ffxii_axis_log_mod PRIVATE include)
+    target_compile_features(ffxii_axis_log_mod PRIVATE cxx_std_20)
+    set_target_properties(ffxii_axis_log_mod PROPERTIES PREFIX "" OUTPUT_NAME axis_log)
+    target_link_options(ffxii_axis_log_mod PRIVATE -static)
 endif()
 
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/generated/full/table.cpp")
