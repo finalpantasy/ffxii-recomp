@@ -261,8 +261,15 @@ Pieces (src/frame_rate.cpp):
      41/65/88% at 0.000/0.017/0.050 s and the 120 fps run (`win-r3a.log`) at
      0.007/0.024/0.058 s: the same curve, one 120 fps frame later.
 
+Adjusted (2026-11-22): 0x3E5D60 sets up a fixed-point oscillator whose
+step [+0x4C6] is a 30 Hz rate divided by frames per tick, and in 60 fps
+mode (the 1EDE70 call at 0x3E5DF2) adds one step to the phase [+0x4C4]:
+1/60 s at 60 fps, 1/120 s at k=2. FpsHook at 0x3E5E03 (`hook 003E5E03
+fps_phase_offset`) multiplies the added step by k. In `win-phase1.log`
+(`fight7-x.txt`, `--fps 120`, about 95% machine load) it logged steps
+1024 -> 2048 and 341 -> 682, the 60 fps values, with no fatal.
+
 Not adjusted:
-- 0x3E5DF2, a one-step phase offset at setup (1/120 s instead of 1/60).
 - 0x53B129, debug text formatting.
 - The other 1EDE70/1EDDA0/1EDE80 sites. A game-clock A/B check covers them
   in aggregate: `fight7.txt` with `FFXII_TEST_CLOCK=game` (inputs land on
