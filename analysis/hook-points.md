@@ -161,3 +161,7 @@ fps cost of the check is not measured yet: the machine was loaded.
   one callee's call sites.
 - `tools/find_lua_regs.py <exe> <functions.tsv>` lists luaL_Reg tables.
 - `examples/native-sample` counts calls to listed VAs in game.
+
+## Entry-hook cost (2026-11-23)
+
+Same source built with and without the manifest's `entry_hooks` line (`A:/AI/ffxii-win/build-noeh`), alternated on `fight7.txt` from the Inner Ward save, fps over 150-250 s (`win-ehab-*.log`, frame lines every 240 frames): round 1 entry hooks 29.4 fps at 95% machine load against 53.6 at 94% (the 29.4 run had a 12 fps stretch, likely a load spike); round 2 50.9 at 80% against 56.9 at 86%. Read as roughly 10% slower with entry hooks under load, with wide error. A run at low machine load would settle it.
