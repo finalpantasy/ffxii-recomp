@@ -1,19 +1,19 @@
-# Game text (EBP2 event scripts and st2ef tables)
+# Game text (event scripts, st2e tables, word tables)
 
 Tool: `tools/ff12text.py` (standard library only). It turns the strings of one file into JSON and builds the file again from edited JSON.
 
 ```
 python -I tools/ff12text.py dump <file> [-o out.json]
-python -I tools/ff12text.py build <file.ebp> <in.json> -o <out.ebp>
+python -I tools/ff12text.py build <file> <in.json> -o <out>
 python -I tools/ff12text.py verify <dir>
 ```
 
-`build` handles EBP2 only. `verify` decodes, encodes and rebuilds every EBP2 and st2ef file under a folder and fails if a single byte differs.
+`dump` and `build` take EBP2 scripts, st2e tables, word tables and `battle_pack.bin`. `verify` rebuilds every such file under a folder and fails if a single byte differs.
 
 ## Where the text is
 
 - Dialog and cutscene subtitles: `ps2data/plan_master/<lang>/event/<area>/<script>/<script>.ebp`. Of the 1,115 English (`us`) scripts, 829 have a text section, holding 17,327 strings in total.
-- Battle, menu and help messages: st2ef tables, each starting with `st2ef\0\0\0`.
+- Menus, help, battle messages and names: st2e tables, word tables and `battle_pack.bin` in `ps2data/image/ff12/test_battle/us/binaryfile/` (below).
 - Cutscenes also open `jsondata/cutscenes/<name>.json`. That file holds no subtitle text: a subtitle edited in the .ebp shows up in the cutscene.
 
 ## Character set
@@ -57,21 +57,34 @@ All integers are little-endian.
 
 `build` writes the strings in the order of their old offsets and keeps shared offsets where the text is still equal. If the new text fits in the old section, the section keeps its old size. Otherwise the section is padded to the next 0x40 boundary, and every header slot that points past it is moved by the difference.
 
-## st2ef layout
+## st2e tables
 
-- 0x00: `st2ef\0\0\0`; 0x08 u32 8; 0x0C u32 0x20 (header size); 0x10 u32 0; 0x14 u32 section offset.
-- 0x20: one 8-byte record per string (contents not decoded).
-- Section +4: u32 offset of the string table, counted from the section start. The table is a u32 count, then that many u32 offsets counted from the table start, then NUL-terminated strings.
+Menu, help and battle message files in `ps2data/image/ff12/test_battle/us/binaryfile/` are st2e tables (27 files). The same header also holds data tables with no text (record arrays in `battle_pack.bin`).
 
-`dump` reads st2ef. `build` does not write it yet.
+- 0x00: `st2e`; 0x04 u32 count; 0x08 u32 record size (4 or 8); 0x0C u32 0x20 (header size); 0x10 u32 0; 0x14 u32 offset of the string section (0 in data tables).
+- 0x20: count records of the record size (ids or attributes; copied as they are).
+- String section: u32 1, u32 12 (offset of the table from the section), u32 size (section start to the end of the last string). The table is a u32 count, then count + 1 u32 offsets counted from the table start (the last is the end of the strings), then the strings. The file is zero-padded to a multiple of 4.
+- A string is game bytes ending in 00, or `ex00` followed by UTF-16LE text ending in a 16-bit 0 (menu names such as "Directors"). The JSON writes the second form as `{ex00}` plus the plain characters.
+
+Older notes called these "st2ef": in `battle_message.bin` the count is 0x66, which reads as "f".
+
+## Word tables
+
+`word.bin` and section 61 of `battle_pack.bin` hold item, ability and command names, such as "Magicks & Technicks". The layout is u32 n, then n + 1 u32 offsets of sub-tables (the last is the end). Each sub-table is a string table like the st2e one: count, count + 1 offsets from the sub-table start, entries. An entry is 00 00, the word, then more zero-separated fields (grammar data), padded with zeros so the next entry starts on 4 bytes. The JSON keeps each entry without its trailing zeros (inner zeros as `{00}`) and a `pad` count, so an unchanged entry rebuilds exactly. A longer entry is padded to 4 again.
+
+## battle_pack.bin
+
+u32 n (71), then n + 1 u32 section offsets. The header, every section and the file are padded to 8 bytes; the last offset is the end of the last section before that padding. Section 2 is a copy of `battle_message.bin`, section 57 is another st2e text table and section 61 is the word table. The other sections are data. The game opens `battle_pack.bin` and never `battle_message.bin` or `word.bin` (checked with `FFXII_MODS_LOG=1` through a battle), so battle text edits go into the pack. `build` rewrites the three text sections and moves the later sections.
 
 ## Verified
 
 - `verify` over the 1,115 English scripts: 828 files with text, 17,327 strings, 0 failures. Every file rebuilt byte for byte.
+- `verify` over the 29 English files of `test_battle/us/binaryfile` that hold text (27 st2e tables, `word.bin`, `battle_pack.bin`): 15,011 strings and entries, 0 failures.
 - In game (Windows GPU build, headless, muted, Steam save on the refinery platform): a mod serving a rebuilt `ene_a0200.ebp` whose text section grew from 0x8840 to 0x8880 (later sections moved by 0x40). The edited subtitle showed, and the subtitles after it still played in order (`win-text4.log`). The character probe ran in `win-text5.log`.
 
 ## Not done
 
-- Writing st2ef tables, and edits that change the string count.
+- Edits that change the number of strings or entries.
+- The `in/` copies of a few tables (`menu01.bin`, `board_*.bin`) that the game also opens.
 - Other languages: their folders (`in`, `fr` and the rest) have not been checked against this table.
 - Meaning of the attribute half of each EBP2 entry, of 0x03, and of most 0x0F codes.
