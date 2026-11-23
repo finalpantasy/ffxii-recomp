@@ -35,6 +35,11 @@ save offset 0x4E68C (VA 0x21B290C). Records 0-26 hold the party and guests,
 | Offset | Type | Meaning |
 |---|---|---|
 | +0x36 | u8 | Attack Power: weapon + off-hand attack (+0x1A in section 13), capped at 255 |
+| +0x37 | u8 | Defense: head + body + accessory +0x18 |
+| +0x38 | u8 | Magick Resist: head + body + accessory +0x19 |
+| +0x3A | u8 | Weapon evade: weapon +0x1D |
+| +0x3B | u8 | Shield evade: off-hand +0x18 |
+| +0x3D | u8 | Evade: weapon +0x1D + off-hand +0x18 |
 | +0x58 | u16 x5 | Equipped item ids: weapon, off-hand, head, body, accessory (0xFFFF empty) |
 
 Evidence: a New Game started under a mod that sets every weapon's attack
@@ -71,10 +76,20 @@ adds its own attack (1 for the early arrows and shot); shields add 0. The formul
 matches all 80 records of the Inner Ward save, and in game a mod recomputing it
 on vanilla data changed 0 values (`win-recomp4.log`).
 
+The other equipment bytes above follow the same rule (sums of section 13 bytes
+over the slots named, capped at 255; every record of the Inner Ward save
+matches). Armor records keep Defense at +0x18 and Magick Resist at +0x19, and
+shields keep evasion at +0x18. +0x32-0x35 and +0x30 do not come from equipment.
+With all six stats recomputed, vanilla data changed 0 values (`win-stat1.log`).
+A table mod setting body-armor Defense to 200 (73 records) changed 58 values,
+and Reks stayed at 133/133 HP through the first fights (`win-def1.log`), where
+the earlier run had him at 122. No enemy hit number was captured, so the
+defense effect is likely but not measured.
+
 The loaded battle_pack's base is the global 0x208E680 (set by 0x2368D0, read in 45
 places). Once loaded, its section table holds absolute addresses instead of
 file offsets, so section 13 is `u32 [base + 0x38]`. It is already loaded when
-0x233C10 runs. `examples/luau-recompute-attack` recomputes the byte there: with
+0x233C10 runs. `examples/luau-recompute-stats` recomputes the byte there: with
 the attack-250 table mod, Reks hit for 904 on the old save (`win-recomp3.log`),
 where the table mod alone left his hits at 39-43.
 
