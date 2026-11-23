@@ -87,7 +87,7 @@ and an A/B on the same input (`win-defA.log` without the table mod,
 the mod the first swordsman's hit took Reks from 133 to 122 HP; with it he
 stayed at 133 through that fight and the 40 s after. Shield evade works the same way: a mod setting +0x18 of the 19
 shields to 100 (Reks carries 0x10CA, evade 9) changed 12 cached values, and Reks
-stayed at 133 HP for the whole 52 s window (`win-evaB.log`). Magick Resist is
+stayed at 133 HP for the whole 52 s window (`win-evaB.log`); the dumped frames show the swordsman's attacks on him ending in BLOCK and PARRY. Magick Resist is
 not tested in battle, because the early fights have no spellcasting enemies.
 
 The loaded battle_pack's base is the global 0x208E680 (set by 0x2368D0, read in 45
