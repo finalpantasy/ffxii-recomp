@@ -82,9 +82,10 @@ matches). Armor records keep Defense at +0x18 and Magick Resist at +0x19, and
 shields keep evasion at +0x18. +0x32-0x35 and +0x30 do not come from equipment.
 With all six stats recomputed, vanilla data changed 0 values (`win-stat1.log`).
 A table mod setting body-armor Defense to 200 (73 records) changed 58 values,
-and Reks stayed at 133/133 HP through the first fights (`win-def1.log`), where
-the earlier run had him at 122. No enemy hit number was captured, so the
-defense effect is likely but not measured.
+and an A/B on the same input (`win-defA.log` without the table mod,
+`win-defB.log` with it, HUD read off dumped frames) showed it working: without
+the mod the first swordsman's hit took Reks from 133 to 122 HP; with it he
+stayed at 133 through that fight and the 40 s after.
 
 The loaded battle_pack's base is the global 0x208E680 (set by 0x2368D0, read in 45
 places). Once loaded, its section table holds absolute addresses instead of
