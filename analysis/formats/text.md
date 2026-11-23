@@ -72,6 +72,8 @@ Older notes called these "st2ef": in `battle_message.bin` the count is 0x66, whi
 
 `word.bin` and section 61 of `battle_pack.bin` hold item, ability and command names, such as "Magicks & Technicks". The layout is u32 n, then n + 1 u32 offsets of sub-tables (the last is the end). Each sub-table is a string table like the st2e one: count, count + 1 offsets from the sub-table start, entries. An entry is 00 00, the word, then more zero-separated fields (grammar data), padded with zeros so the next entry starts on 4 bytes. The JSON keeps each entry without its trailing zeros (inner zeros as `{00}`) and a `pad` count, so an unchanged entry rebuilds exactly. A longer entry is padded to 4 again.
 
+Sub-tables of the English `word.bin` by their first entries (guessed from content): 0 magicks and statuses (545), 1 weapons, armor and items (544; English entries carry a plural suffix after {00}{09} and an article), 3 abilities (362), 4 battle commands (63: Attack, Items, Gambits, Magicks & Technicks), 5 (32), 6 gambit targets (284), 8 characters and enemies (629), 9 and 10 (128, 129), 11 key items (512), 12 loot and maps (512), 13 species (16), 14 bestiary (64). Section 57 of the pack is an st2e table of 128 "FFFF" placeholders.
+
 ## battle_pack.bin
 
 u32 n (71), then n + 1 u32 section offsets. The header, every section and the file are padded to 8 bytes; the last offset is the end of the last section before that padding. Section 2 is a copy of `battle_message.bin`, section 57 is another st2e text table and section 61 is the word table. The other sections are data. The game opens `battle_pack.bin` and never `battle_message.bin` or `word.bin` (checked with `FFXII_MODS_LOG=1` through a battle), so battle text edits go into the pack. `build` rewrites the three text sections and moves the later sections.
@@ -81,6 +83,7 @@ u32 n (71), then n + 1 u32 section offsets. The header, every section and the fi
 - `verify` over the 1,115 English scripts: 828 files with text, 17,327 strings, 0 failures. Every file rebuilt byte for byte.
 - `verify` over the 29 English files of `test_battle/us/binaryfile` that hold text (27 st2e tables, `word.bin`, `battle_pack.bin`): 15,011 strings and entries, 0 failures.
 - In game (Windows GPU build, headless, muted, Steam save on the refinery platform): a mod serving a rebuilt `ene_a0200.ebp` whose text section grew from 0x8840 to 0x8880 (later sections moved by 0x40). The edited subtitle showed, and the subtitles after it still played in order (`win-text4.log`). The character probe ran in `win-text5.log`.
+- In game (Inner Ward save, `fight7.txt`): a rebuilt `battle_pack.bin` 72 bytes longer, with " (mod)" added to four command names in the word section and to five battle messages, showed "Attack (mod)", "Magicks & Technicks (mod)" and "Items (mod)" in the battle menu through the corridor fights and the boss fight, with no fatal (`win-st2c.log`, 99% machine load). The edited messages were not caught on a dumped frame.
 
 ## Not done
 
