@@ -15,6 +15,7 @@
 #include <filesystem>
 #include <string>
 #include <unordered_set>
+#include <vector>
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -23,6 +24,7 @@
 #endif
 
 #include "ffxii_mod.h"
+#include "luau_mods.h"
 #include "mod_index.h"
 #include "runtime/env.h"
 #include "runtime/platform.h"
@@ -168,11 +170,41 @@ void CloseLib(void* lib) {
 
 namespace ffxii {
 
+namespace {
+
+// The api a mod's modules and scripts receive; it lives as long as the process.
+const ffxii_api* ApiFor(const mods::ModInfo& m) {
+  Loaded& l = g_loaded.emplace_back();
+  l.id = m.id;
+  l.dir = m.root;
+  ffxii_api& a = l.api;
+  a.abi = FFXII_MOD_ABI;
+  a.size = sizeof(ffxii_api);
+  a.game_version = "1.0.4.0";
+  a.mod_id = l.id.c_str();
+  a.mod_dir = l.dir.c_str();
+  a.reg = ApiReg;
+  a.set_reg = ApiSetReg;
+  a.xmm = ApiXmm;
+  a.set_xmm = ApiSetXmm;
+  a.guest_ptr = ApiGuestPtr;
+  a.hook = ApiHook;
+  a.hook_covers_direct = ApiCoversDirect;
+  a.ret = ApiRet;
+  a.call = ApiCall;
+  a.log = ApiLog;
+  return &a;
+}
+
+}  // namespace
+
 void LoadNativeModules() {
-  if (const char* e = recomp::Env("MODS_NO_NATIVE"); e && *e && *e != '0') {
-    std::fprintf(stderr, "[native] native modules off\n");
-    return;
-  }
+  const char* no_native = recomp::Env("MODS_NO_NATIVE");
+  const bool native = !(no_native && *no_native && *no_native != '0');
+  if (!native) std::fprintf(stderr, "[native] native modules off\n");
+  const char* interp = recomp::Env("LUAU_INTERP");
+  luau::Options lopt;
+  lopt.native = !(interp && *interp && *interp != '0');
   const char* dir = recomp::Env("MODS_DIR");
   const char* off = recomp::Env("MODS_DISABLE");
   const std::string root = mods::ResolveRoot(dir ? dir : "", recomp::platform::ExeDir(),
@@ -180,7 +212,8 @@ void LoadNativeModules() {
   const mods::Index index = mods::Build(root, mods::ParseIdList(off ? off : ""));
   for (size_t i : mods::NativeLoadOrder(index)) {
     const mods::ModInfo& m = index.mods[i];
-    for (const std::string& rel : m.native) {
+    const ffxii_api* api = nullptr;
+    for (const std::string& rel : native ? m.native : std::vector<std::string>{}) {
       const std::string path = m.root + "/" + rel;
       std::string err;
       void* lib = OpenLib(path, &err);
@@ -196,29 +229,22 @@ void LoadNativeModules() {
         CloseLib(lib);
         continue;
       }
-      Loaded& l = g_loaded.emplace_back();
-      l.id = m.id;
-      l.dir = m.root;
-      ffxii_api& a = l.api;
-      a.abi = FFXII_MOD_ABI;
-      a.size = sizeof(ffxii_api);
-      a.game_version = "1.0.4.0";
-      a.mod_id = l.id.c_str();
-      a.mod_dir = l.dir.c_str();
-      a.reg = ApiReg;
-      a.set_reg = ApiSetReg;
-      a.xmm = ApiXmm;
-      a.set_xmm = ApiSetXmm;
-      a.guest_ptr = ApiGuestPtr;
-      a.hook = ApiHook;
-      a.hook_covers_direct = ApiCoversDirect;
-      a.ret = ApiRet;
-      a.call = ApiCall;
-      a.log = ApiLog;
-      const int rc = init(&a);
+      if (!api) api = ApiFor(m);
+      const int rc = init(api);
       // A failed module stays loaded: hooks it installed may point into it.
       std::fprintf(stderr, "[native] %s: %s init -> %d%s\n", m.id.c_str(), rel.c_str(), rc,
                    rc ? " (failed)" : "");
+    }
+    // Scripts are sandboxed, so --no-native-mods leaves them on.
+    if (!m.scripts.empty()) {
+      if (!api) api = ApiFor(m);
+      std::vector<std::string> files;
+      for (const std::string& rel : m.scripts) files.push_back(m.root + "/" + rel);
+      std::string err;
+      const bool ok = luau::Load(api, files, lopt, err) != nullptr;
+      std::fprintf(stderr, "[luau] %s: %zu scripts%s%s%s\n", m.id.c_str(), files.size(),
+                   lopt.native && luau::NativeSupported() ? " (native code)" : " (interpreter)",
+                   ok ? "" : " failed: ", err.c_str());
     }
   }
 }

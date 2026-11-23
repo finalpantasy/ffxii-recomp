@@ -4,6 +4,7 @@
 #include <string>
 
 #include "mod_index.h"
+#include "mod_lab.h"
 #include "native_mods.h"
 #include "text_mods.h"
 #include "runtime/platform.h"
@@ -18,7 +19,15 @@ void Usage() {
                "         [--mods-list] [--no-native-mods]\n"
                "  --mods-watch      reload the mods folder when its files change\n"
                "  --mods-list       print the mods that would load and exit (1 on errors)\n"
-               "  --no-native-mods  load no mod DLLs (mod.ini native = ...)\n"
+               "  --no-native-mods  load no mod DLLs (mod.ini native = ...); scripts still load\n"
+               "         [--luau-interp]\n"
+               "  --luau-interp     run Luau script mods in the interpreter (no native code)\n"
+               "       ffxii_recomp --mod-lab [--mod-lab-dir PATH] [--mod-lab-port N] [--no-browser]\n"
+               "       ffxii_recomp --mod-lab-run [--mod-lab-dir PATH] [--mod-lab-iters N]\n"
+               "                    [--mod-lab-reps N] [--mod-lab-only KEY,KEY]\n"
+               "  --mod-lab         serve the Mod Lab page (127.0.0.1:8723) and open it: the\n"
+               "                    same test mod in each language, timed per hook call\n"
+               "  --mod-lab-run     run the lab once and print the results as JSON\n"
                "         [--interp] [--interp-no-pace] [--interp-t T] [-- ARGS...]\n"
                "  --interp          show a blended frame between each two game frames\n"
                "                    (60 Hz game logic, twice the presented frame rate)\n"
@@ -43,6 +52,8 @@ void SetSwitch(const char* name, const std::string& value) {
 }  // namespace
 
 int main(int argc, char** argv) {
+  // --mod-lab / --mod-lab-run: the mod lab page or runner; no game needed.
+  if (const int rc = ffxii::modlab::Main(argc, argv, recomp::platform::ExeDir()); rc != -1) return rc;
   std::filesystem::path game_dir;
   std::filesystem::path exe;
   std::string game_args;
@@ -70,6 +81,8 @@ int main(int argc, char** argv) {
       mods_list = true;
     } else if (arg == "--no-native-mods") {
       SetSwitch("FFXII_MODS_NO_NATIVE", "1");
+    } else if (arg == "--luau-interp") {
+      SetSwitch("FFXII_LUAU_INTERP", "1");
     } else if (arg == "--mods-watch") {
       SetSwitch("FFXII_MODS_WATCH", "1");
     } else if (arg == "--interp") {

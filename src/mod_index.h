@@ -42,6 +42,8 @@ struct ModInfo {
   std::vector<std::string> conflicts;  // ids
   std::string off_reason;  // why Build turned it off (empty: by mod.ini or flag)
   std::vector<std::string> native;  // native module DLLs, relative to root
+  std::vector<std::string> scripts; // Luau scripts, relative to root (src/luau_mods.h)
+  std::string language;             // mod.ini language: a label only (mod lab, launchers)
   std::string root;     // host folder of the mod (holds mod.ini)
   std::string dir;      // host folder holding the files
   std::string text_dir; // host folder holding patches (empty for "loose")
@@ -86,7 +88,8 @@ std::string Normalize(const std::string& path);
 // Keys: id, name, version, priority (integer), enabled (true/false/1/0),
 // requires (comma list of id or id>=version), conflicts (comma list of ids),
 // native (comma list of native module DLLs inside the mod folder; see
-// include/ffxii_mod.h).
+// include/ffxii_mod.h), scripts (comma list of Luau scripts inside the mod
+// folder; see src/luau_mods.h).
 // Unknown keys are kept out of ModInfo and reported in `errors`.
 bool ParseModIni(const std::string& text, ModInfo& out, std::vector<std::string>& errors);
 
@@ -100,7 +103,7 @@ Index Build(const std::string& root, const std::unordered_set<std::string>& disa
 // The ranking used everywhere: true if a beats b (priority, then id).
 bool RanksAbove(const ModInfo& a, const ModInfo& b);
 
-// Enabled mods that declare native modules, lowest-ranked first: each
+// Enabled mods that declare native modules or scripts, lowest-ranked first: each
 // later module's hooks wrap the earlier ones', so the highest-ranked mod
 // runs first on every call.
 std::vector<size_t> NativeLoadOrder(const Index& ix);

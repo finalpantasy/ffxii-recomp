@@ -37,11 +37,63 @@ if(WIN32)
     target_link_options(ffxii_axis_log_mod PRIVATE -static)
 endif()
 
+# Luau (MIT) runs script mods (src/luau_mods.cpp): a local checkout in
+# FFXII_LUAU_DIR, or the pinned release fetched at configure time.
+set(FFXII_LUAU_DIR "" CACHE PATH "Luau source checkout (empty: fetch the pinned tag)")
+set(LUAU_BUILD_CLI OFF CACHE BOOL "" FORCE)
+set(LUAU_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+if(FFXII_LUAU_DIR)
+    add_subdirectory("${FFXII_LUAU_DIR}" luau EXCLUDE_FROM_ALL)
+else()
+    include(FetchContent)
+    FetchContent_Declare(luau GIT_REPOSITORY https://github.com/luau-lang/luau.git GIT_TAG 0.745 GIT_SHALLOW TRUE)
+    FetchContent_MakeAvailable(luau)
+endif()
+add_library(ffxii_luau_mods STATIC src/luau_mods.cpp)
+target_include_directories(ffxii_luau_mods PUBLIC include)
+target_compile_features(ffxii_luau_mods PUBLIC cxx_std_20)
+target_link_libraries(ffxii_luau_mods PUBLIC Luau.VM Luau.Compiler Luau.CodeGen)
+
+# Mod lab (src/mod_lab.h): the page, the runner and the lab mods in
+# bin/modlab (examples/modlab: the same mod in C, C++ and Luau).
+set(FFXII_LAB_SOURCES src/mod_lab.cpp src/mod_lab_server.cpp)
+set(FFXII_LAB_DIR "${RECOMP_BUNDLE_DIR}/modlab")
+add_executable(ffxii_modlab src/mod_lab_main.cpp ${FFXII_LAB_SOURCES} src/mod_index.cpp)
+target_include_directories(ffxii_modlab PRIVATE include)
+target_link_libraries(ffxii_modlab PRIVATE ffxii_luau_mods)
+set_target_properties(ffxii_modlab PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${RECOMP_BUNDLE_DIR}")
+if(WIN32)
+    target_link_libraries(ffxii_modlab PRIVATE ws2_32 shell32)
+    if(MINGW)
+        target_link_options(ffxii_modlab PRIVATE -static)
+    endif()
+    add_library(ffxii_lab_c MODULE examples/modlab/lab-c/lab.c)
+    add_library(ffxii_lab_cpp MODULE examples/modlab/lab-cpp/lab.cpp)
+    target_compile_features(ffxii_lab_cpp PRIVATE cxx_std_20)
+    foreach(t c cpp)
+        target_include_directories(ffxii_lab_${t} PRIVATE include)
+        target_link_options(ffxii_lab_${t} PRIVATE -static)
+        set_target_properties(ffxii_lab_${t} PROPERTIES PREFIX "" OUTPUT_NAME lab_${t}
+            LIBRARY_OUTPUT_DIRECTORY "${FFXII_LAB_DIR}/lab-${t}" RUNTIME_OUTPUT_DIRECTORY "${FFXII_LAB_DIR}/lab-${t}")
+        add_dependencies(ffxii_modlab ffxii_lab_${t})
+    endforeach()
+endif()
+add_custom_command(TARGET ffxii_modlab POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${FFXII_LAB_DIR}/lab-c" "${FFXII_LAB_DIR}/lab-cpp" "${FFXII_LAB_DIR}/lab-luau"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/examples/modlab/lab-c/mod.ini" "${FFXII_LAB_DIR}/lab-c/mod.ini"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/examples/modlab/lab-cpp/mod.ini" "${FFXII_LAB_DIR}/lab-cpp/mod.ini"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/examples/modlab/lab-luau/mod.ini" "${FFXII_LAB_DIR}/lab-luau/mod.ini"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/examples/modlab/lab-luau/lab.luau" "${FFXII_LAB_DIR}/lab-luau/lab.luau")
+
 if(EXISTS "${FFXII_GENERATED_DIR}/table.cpp")
     recomp_add_lifted(ffxii_lifted "${FFXII_GENERATED_DIR}" src/mods.cpp src/mod_index.cpp ${FFXII_TEXT_SOURCES} src/probe.cpp src/frame_rate.cpp src/watch.cpp src/cbscan.cpp src/direct_hooks.cpp)
-    add_executable(ffxii_recomp src/main.cpp src/native_mods.cpp)
+    add_executable(ffxii_recomp src/main.cpp src/native_mods.cpp ${FFXII_LAB_SOURCES})
+    add_dependencies(ffxii_recomp ffxii_modlab)
     target_include_directories(ffxii_recomp PRIVATE include)
-    target_link_libraries(ffxii_recomp PRIVATE ffxii_lifted ZLIB::ZLIB recomp_win32 recomp_ucrt recomp_dinput8 recomp_xinput recomp_dbghelp recomp_steam recomp_dxgi recomp_d3d11 recomp_d3dcompiler)
+    target_link_libraries(ffxii_recomp PRIVATE ffxii_lifted ZLIB::ZLIB recomp_win32 recomp_ucrt recomp_dinput8 recomp_xinput recomp_dbghelp recomp_steam recomp_dxgi recomp_d3d11 recomp_d3dcompiler ffxii_luau_mods)
+    if(WIN32)
+        target_link_libraries(ffxii_recomp PRIVATE ws2_32 shell32)
+    endif()
     recomp_bundle(ffxii_recomp)
     recomp_whole_archive(ffxii_recomp)
 endif()
