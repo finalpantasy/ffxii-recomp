@@ -4,7 +4,8 @@ addresses in every thread (writes, or reads and writes with ":rw"), and print
 the RIP after each access with the current value, plus the exe's load base.
 Detaches after <seconds>. HWWATCH_POKE="addr,stride,count,byte;..." (hex
 addr/stride) writes those bytes at every hit, while the process is still stopped, and
-detaches after HWWATCH_POKE_HITS hits (default 1). Guest VA = host - 0x20000000000 on the Windows
+detaches after HWWATCH_POKE_HITS hits (default 1). HWWATCH_STACK=N prints
+the exe-range qwords among the top N stack slots (as VAs at 0x140000000). Guest VA = host - 0x20000000000 on the Windows
 build; turn a RIP into a lifted function with llvm-nm (RVA = RIP - base, VA =
 0x140000000 + RVA). The game can stall while attached. Debugging tool only."""
 import ctypes, ctypes.wintypes as W, os, sys, time, struct
@@ -47,12 +48,14 @@ if not k.DebugActiveProcess(pid): sys.exit(f"attach failed {ctypes.get_last_erro
 k.DebugSetProcessKillOnExit(False)
 hp = k.OpenProcess(0x0410, False, pid)
 ev, end, hits = DEBUG_EVENT(), time.time() + secs, 0
+image_base = 0
 while time.time() < end:
     if not k.WaitForDebugEvent(ctypes.byref(ev), 200): continue
     cont = 0x00010002  # DBG_CONTINUE
     if ev.code in (2, 3):  # CREATE_THREAD, CREATE_PROCESS
         if ev.code == 3:
-            print("image base", hex(struct.unpack_from("<Q", bytes(ev.u), 28)[0]), flush=True)
+            image_base = struct.unpack_from("<Q", bytes(ev.u), 28)[0]
+            print("image base", hex(image_base), flush=True)
         set_dr(ev.tid, True)
     elif ev.code == 1:  # EXCEPTION
         exc = struct.unpack_from("<I", bytes(ev.u), 4)[0]
@@ -66,6 +69,12 @@ while time.time() < end:
                     b = ctypes.create_string_buffer(ln); n = ctypes.c_size_t()
                     k.ReadProcessMemory(hp, a, b, ln, ctypes.byref(n)); vals.append((i, hex(a), b.raw.hex()))
             print(f"{time.time()-end+secs:7.2f}s tid {ev.tid} rip {rip:#x} {vals}", flush=True)
+            depth = int(os.environ.get("HWWATCH_STACK", "0"))
+            if depth and image_base:
+                rsp = cx(0x98); sb = ctypes.create_string_buffer(8 * depth); n = ctypes.c_size_t()
+                k.ReadProcessMemory(hp, rsp, sb, 8 * depth, ctypes.byref(n))
+                qs = struct.unpack(f"<{n.value // 8}Q", sb.raw[:n.value // 8 * 8])
+                print("   stack:", " ".join(f"+{8*j:#x}:{q - image_base + 0x140000000:#x}" for j, q in enumerate(qs) if image_base <= q < image_base + 0x20000000), flush=True)
             cx(0x68, val=0); k.SetThreadContext(h, ctx)
             hits += 1
             poke = os.environ.get("HWWATCH_POKE")

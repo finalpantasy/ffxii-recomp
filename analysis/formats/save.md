@@ -20,6 +20,7 @@ from the title decrypts each save twice (once for the list, once to load).
 The inflated image is a copy of one guest block: VA 0x2164280, 0x56690 bytes,
 so save offset `o` is VA `0x2164280 + o`.
 
+- 0x2EF640 returns the block address; 28 functions call it.
 - 0x2EF5F0 clears the block (memset, called at New Game).
 - 0x2EF570 copies the whole block to 0x22676C0.
 - 0x2EF4A0 copies 0x6000 bytes from 0x2166480 to 0x21B290C, the second
@@ -54,11 +55,19 @@ first fight nothing read the Broadsword's attack in the loaded equipment table
 
 So the save keeps each character's attack as computed when it was last set
 (New Game here), battles use that copy, and a table mod reaches an old save's
-battles only when something recomputes the byte. A mod that wants old saves to
-pick up new weapon stats can recompute +0x36 from the equipment table right
-after the load copies the block in, before the actors are built. The function
-that does that copy is not identified yet (the copy itself runs in a host
-memcpy).
+battles only when something recomputes the byte. A mod can rewrite the byte at load. 0x233C10 is the first save-system function
+that runs after the load copies the block in (a Luau probe hooked all 28
+functions that call the block getter 0x2EF640 and logged the byte before and
+after each; `examples/luau-cached-attack/loadprobe.luau`). A Luau hook on
+0x233C10 that sets +0x36 of every record to 250 before calling the original
+made Reks's first hit 949 on the old save, with no table mod
+(`examples/luau-cached-attack/atk.luau`, `win-lhook2.log`).
+
+Still open for a real "recompute on load" mod: where a record names its
+equipped weapon, where the game keeps its pointer to the loaded equipment
+table (it sits on the heap, VA 0xE081168 in one run), and the formula (three
+records saved 255 under the attack-250 mod, so something is added before the
+cap).
 
 ## Tools
 
