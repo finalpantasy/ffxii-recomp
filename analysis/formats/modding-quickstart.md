@@ -76,7 +76,7 @@ ffxii.hook(0x798FF0, function(cpu, original)
 end)
 ```
 
-The hook gets `cpu` and `original`. Read or set registers as `cpu.rax`, `cpu.rcx`, ... `cpu.r15`. Call `original(cpu)` to run the next hook or the game's function, or set `cpu.rax` and call `ffxii.ret(cpu)` to return without it. A hook that does neither runs the original and logs one warning.
+The hook gets `cpu`, `original` and the first four integer arguments (the values of rcx, rdx, r8 and r9 at entry), so `function(cpu, original, a, b)` can read its arguments without touching `cpu`. Read or set registers as `cpu.rax`, `cpu.rcx`, ... `cpu.r15`; each such access is a call into the recomp (about 25 ns on a loaded machine), so read a register into a local once instead of in a loop. Call `original(cpu)` to run the next hook or the game's function, or set `cpu.rax` and call `ffxii.ret(cpu)` to return without it. A hook that does neither runs the original and logs one warning.
 
 | Function | Does |
 |---|---|
@@ -96,5 +96,7 @@ Numbers are Luau doubles, so register and memory values above 2^53 lose their lo
 `ffxii_modlab` (or `ffxii_recomp --mod-lab`) serves a local page at `http://127.0.0.1:8723/` and opens it. The page runs the same test mod written in C, C++ and Luau (`examples/modlab`, built into `bin/modlab`) against three stand-in game functions through the real mod API: a filter that calls the original, a replacement that reads a table, and a replacement with a 32-step loop. Each language's hooks load into a fresh hook chain, every call's result is checked against the expected value, and the page shows nanoseconds per call (median of the repeats), the cost over the game function alone, load time and the machine's CPU load during the run. Luau runs twice, as native code and in the interpreter. The game does not run; the numbers measure the hook boundary and the script itself.
 
 Flags: `--mod-lab-dir PATH` (mods to test, default `<exe dir>/modlab`), `--mod-lab-port N`, `--no-browser`. `--mod-lab-run` runs once and prints JSON (`--mod-lab-iters N`, `--mod-lab-reps N`, `--mod-lab-only lab-c,lab-luau:native`). Any mod folder with `native` or `scripts` lines that hooks 0x1000, 0x2000 and 0x3000 (`examples/modlab/lab_targets.h`) can be added to the lab folder.
+
+Entering a Luau hook costs about 60 ns on a loaded machine, almost all of it Luau's protected call and C-call machinery, so native code and the interpreter cost the same for short hooks. A hook that reads its argument ten times went from about 330 ns (through `cpu.rcx`) to 106 ns (through the argument). Caching registers in a Lua table was tried and was slower: emptying and walking the table on every call cost more than the C calls it saved.
 
 First results (Ryzen 9 9950X3D2, machine at 100% CPU from other work, 1,000,000 calls, median of 5): game function alone about 2 ns; C and C++ add 3-4 ns for the filter and table read and about 56-59 ns for the loop; Luau adds about 105-136 ns for the filter and table read (native code and interpreter about the same, so the boundary dominates) and 796 ns (native) or 1,190 ns (interpreter) for the loop. All 15 language-test pairs returned correct results.

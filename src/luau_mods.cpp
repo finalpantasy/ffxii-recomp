@@ -52,7 +52,14 @@ class Mod {
   lua_State* L = nullptr;
   std::recursive_mutex mu;
   CpuUd* cpu = nullptr;  // the one cpu userdata, reused by every call
-  int cpu_ref = 0;
+  // What every hook call needs sits on the stack of L, which never runs
+  // code after loading, so its slots are absolute: 1 the cpu userdata,
+  // 2 the original() function, 3 and up each hook's script function. Calls
+  // copy them to H and run there; copying a slot is cheaper than a registry
+  // read. (On H itself a nested hook call would see the slots of the C
+  // function it was entered from, since stack indexes are frame-relative.)
+  lua_State* H = nullptr;
+  int fixed = 0;  // L's stack height
   std::vector<size_t> slots;
   bool warned = false;
 
@@ -63,8 +70,7 @@ namespace {
 
 struct Slot {
   std::atomic<Mod*> mod{nullptr};
-  int fn_ref = 0;
-  int orig_ref = 0;
+  int fn_idx = 0;  // the hook function's slot on Mod::H
   ffxii_fn original = nullptr;
 };
 std::array<Slot, kSlots> g_slots;
@@ -94,11 +100,17 @@ void Invoke(size_t i, ffxii_cpu* raw) {
   u->cpu = raw;
   u->original = s.original;
   u->finished = false;
-  lua_State* L = m->L;
-  lua_rawgeti(L, LUA_REGISTRYINDEX, s.fn_ref);
-  lua_rawgeti(L, LUA_REGISTRYINDEX, m->cpu_ref);
-  lua_rawgeti(L, LUA_REGISTRYINDEX, s.orig_ref);
-  if (lua_pcall(L, 2, 0, 0) != LUA_OK) {
+  lua_State* L = m->H;
+  lua_xpush(m->L, L, s.fn_idx);
+  lua_xpush(m->L, L, 1);
+  lua_xpush(m->L, L, 2);
+  // The first four integer arguments, so reading them costs no C call.
+  const ffxii_api* a = m->api;
+  lua_pushnumber(L, double(a->reg(raw, FFXII_RCX)));
+  lua_pushnumber(L, double(a->reg(raw, FFXII_RDX)));
+  lua_pushnumber(L, double(a->reg(raw, FFXII_R8)));
+  lua_pushnumber(L, double(a->reg(raw, FFXII_R9)));
+  if (lua_pcall(L, 6, 0, 0) != LUA_OK) {
     m->Log(std::string("hook error: ") + (lua_tostring(L, -1) ? lua_tostring(L, -1) : "?"));
     lua_pop(L, 1);
   } else if (!u->finished && !m->warned) {
@@ -175,15 +187,15 @@ int Hook(lua_State* L) {
   }
   if (i == kSlots) luaL_error(L, "too many script hooks (%d)", int(kSlots));
   Slot& s = g_slots[i];
-  lua_pushvalue(L, 2);
-  s.fn_ref = lua_ref(L, -1);
-  lua_pop(L, 1);
-  lua_pushcfunction(L, Original, "original");
-  s.orig_ref = lua_ref(L, -1);
-  lua_pop(L, 1);
+  if (lua_gettop(m->L) != m->fixed || !lua_checkstack(m->L, 2)) {
+    s.mod.store(nullptr);
+    luaL_error(L, "ffxii.hook can only be called while the script loads");
+  }
+  lua_xpush(L, m->L, 2);
+  s.fn_idx = ++m->fixed;
   if (m->api->hook(va, kThunks[i], &s.original) != 0) {
-    lua_unref(L, s.fn_ref);
-    lua_unref(L, s.orig_ref);
+    lua_pop(m->L, 1);
+    m->fixed--;
     s.mod.store(nullptr);
     char line[96];
     std::snprintf(line, sizeof line, "hook %08llX refused (not a lifted function entry)",
@@ -318,10 +330,14 @@ void OpenApi(lua_State* L, Mod* m) {
   lua_setfield(L, -2, "__type");
   lua_setreadonly(L, -1, true);
   lua_setuserdatametatable(L, kCpuTag);
+  // H: the hook-call thread (see Mod::H), kept alive by the registry.
+  m->H = lua_newthread(L);
+  lua_ref(L, -1);
+  lua_pop(L, 1);
   m->cpu = static_cast<CpuUd*>(lua_newuserdatataggedwithmetatable(L, sizeof(CpuUd), kCpuTag));
   new (m->cpu) CpuUd();
-  m->cpu_ref = lua_ref(L, -1);
-  lua_pop(L, 1);
+  lua_pushcfunction(L, Original, "original");
+  m->fixed = lua_gettop(L);
 }
 
 bool RunChunk(Mod* m, const std::string& name, const std::string& src, const Options& opt, std::string& err) {
@@ -331,23 +347,27 @@ bool RunChunk(Mod* m, const std::string& name, const std::string& src, const Opt
   size_t size = 0;
   char* bc = luau_compile(src.data(), src.size(), &co, &size);
   lua_State* T = lua_newthread(m->L);
+  const int tref = lua_ref(m->L, -1);  // anchored in the registry, off L's stack
+  lua_pop(m->L, 1);
+  struct Unref {
+    lua_State* L;
+    int ref;
+    ~Unref() { lua_unref(L, ref); }
+  } unref{m->L, tref};
   luaL_sandboxthread(T);
   const std::string chunk = "=" + name;
   const int rc = luau_load(T, chunk.c_str(), bc, size, 0);
   std::free(bc);
   if (rc != 0) {
     err = name + ": " + (lua_tostring(T, -1) ? lua_tostring(T, -1) : "load failed");
-    lua_pop(m->L, 1);
     return false;
   }
   if (opt.native && NativeSupported()) luau_codegen_compile(T, -1);
   std::lock_guard<std::recursive_mutex> lock(m->mu);
   if (lua_pcall(T, 0, 0, 0) != LUA_OK) {
     err = name + ": " + (lua_tostring(T, -1) ? lua_tostring(T, -1) : "error");
-    lua_pop(m->L, 1);
     return false;
   }
-  lua_pop(m->L, 1);  // the thread
   return true;
 }
 
