@@ -10,7 +10,9 @@
 #include <cstring>
 #include <fstream>
 #include <iterator>
+#include <chrono>
 #include <mutex>
+#include <thread>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -72,10 +74,31 @@ std::string OneLine(const std::string& s) {
   return cause;
 }
 
+// Epoch interruption bounds how long one hook call (or a module's init)
+// may run in wasm code: a timer thread advances the engine's epoch every
+// kTickMs, and each call gets a deadline in ticks. Time spent in game code
+// (ffxii_original, ffxii_call) does not count: the deadline is renewed when
+// the game code returns.
+constexpr uint32_t kTickMs = 10;
+constexpr uint64_t kNoDeadline = uint64_t(1) << 62;
+
 wasm_engine_t* Engine() {
-  static wasm_engine_t* e = wasm_engine_new();
+  static wasm_engine_t* e = [] {
+    wasm_config_t* cfg = wasm_config_new();
+    wasmtime_config_epoch_interruption_set(cfg, true);
+    wasm_engine_t* engine = wasm_engine_new_with_config(cfg);
+    std::thread([engine] {
+      for (;;) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(kTickMs));
+        wasmtime_engine_increment_epoch(engine);
+      }
+    }).detach();
+    return engine;
+  }();
   return e;
 }
+
+uint64_t Ticks(uint32_t ms) { return ms ? (ms + kTickMs - 1) / kTickMs + 1 : kNoDeadline; }
 
 }  // namespace
 
@@ -91,6 +114,12 @@ class Mod {
   // mod entered from there must use that host function's caller context.
   wasmtime_context_t* active = nullptr;
   bool warned = false;
+
+  void Renew(wasmtime_context_t* ctx) const { wasmtime_context_set_epoch_deadline(ctx, Ticks(opt.time_limit_ms)); }
+  std::string LimitNote(const std::string& text) const {
+    if (text.find("interrupt") == std::string::npos || !opt.time_limit_ms) return text;
+    return text + " (ran longer than " + std::to_string(opt.time_limit_ms) + " ms)";
+  }
 
   void Log(const std::string& s) const { api->log(api, s.c_str()); }
   wasmtime_context_t* Ctx() { return active ? active : wasmtime_store_context(store); }
@@ -122,9 +151,11 @@ void Invoke(size_t i, ffxii_cpu* raw) {
   args[2].i64 = int64_t(a->reg(raw, FFXII_R8));
   args[3].i64 = int64_t(a->reg(raw, FFXII_R9));
   wasm_trap_t* trap = nullptr;
-  wasmtime_error_t* err = wasmtime_func_call_unchecked(m->Ctx(), &s.func, args, 4, &trap);
+  wasmtime_context_t* ctx = m->Ctx();
+  m->Renew(ctx);
+  wasmtime_error_t* err = wasmtime_func_call_unchecked(ctx, &s.func, args, 4, &trap);
   if (err || trap) {
-    m->Log("hook trapped: " + OneLine(ErrText(err, trap)));
+    m->Log("hook trapped: " + m->LimitNote(OneLine(ErrText(err, trap))));
   } else if (!c.finished && !m->warned) {
     m->warned = true;
     m->Log("a hook returned without ffxii_original() or ffxii_ret(); the original ran");
@@ -224,6 +255,7 @@ HOST(HostOriginal) {
   wasmtime_context_t* saved = m->active;
   m->active = wasmtime_caller_context(caller);
   c->original(c->cpu);
+  m->Renew(m->active);
   m->active = saved;
   return nullptr;
 }
@@ -321,6 +353,7 @@ HOST(HostCall) {
   wasmtime_context_t* saved = m->active;
   m->active = wasmtime_caller_context(caller);
   const uint64_t r = m->api->call(m->cur->cpu, va, a, n);
+  m->Renew(m->active);
   m->active = saved;
   v[0].i64 = int64_t(r);
   return nullptr;
@@ -488,7 +521,7 @@ bool CallInit(wasmtime_context_t* ctx, wasmtime_instance_t* inst, const char* na
   wasm_trap_t* trap = nullptr;
   wasmtime_error_t* e = wasmtime_func_call(ctx, &item.of.func, nullptr, 0, r, nres, &trap);
   if (e || trap) {
-    err = std::string(name) + " trapped: " + ErrText(e, trap);
+    err = std::string(name) + " trapped: " + OneLine(ErrText(e, trap));
     return false;
   }
   if (nres == 1 && r[0].kind == WASMTIME_I32) rc = r[0].of.i32;
@@ -546,6 +579,9 @@ std::shared_ptr<Mod> Load(const ffxii_api* api, const std::vector<std::string>& 
   std::lock_guard<std::recursive_mutex> lock(m->mu);
   wasmtime_context_t* ctx = wasmtime_store_context(m->store);
   for (const std::string& path : files) {
+    // Instantiation checks the epoch too (a store starts at deadline 0).
+    wasmtime_context_set_epoch_deadline(
+        ctx, m->opt.time_limit_ms ? Ticks(m->opt.time_limit_ms * 10) : kNoDeadline);
     std::vector<uint8_t> bytes;
     if (!ReadFile(path, bytes)) {
       err = "cannot read " + path;
@@ -578,6 +614,8 @@ std::shared_ptr<Mod> Load(const ffxii_api* api, const std::vector<std::string>& 
       return nullptr;
     }
     int32_t rc = 0;
+    wasmtime_context_set_epoch_deadline(
+        ctx, m->opt.time_limit_ms ? Ticks(m->opt.time_limit_ms * 10) : kNoDeadline);
     // A reactor module (clang -mexec-model=reactor) runs its constructors here.
     if (!CallInit(ctx, &inst, "_initialize", rc, err) || !CallInit(ctx, &inst, "ffxii_init", rc, err)) {
       err = path + ": " + err;

@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <filesystem>
@@ -273,6 +274,7 @@ void LoadNativeModules() {
       wasm::Options wopt;
       wopt.readable = GuestReadable;
       wopt.writable = GuestWritable;
+      if (const char* lim = recomp::Env("WASM_TIME_LIMIT_MS")) wopt.time_limit_ms = uint32_t(std::strtoul(lim, nullptr, 10));
       std::string err;
       const bool ok = wasm::Load(api, files, wopt, err) != nullptr;
       std::fprintf(stderr, "[wasm] %s: %zu modules (Wasmtime %s)%s%s\n", m.id.c_str(), files.size(),

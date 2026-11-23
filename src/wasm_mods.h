@@ -23,6 +23,10 @@ struct Options {
   // mod lab, whose stand-in memory is host memory).
   bool (*readable)(uint64_t va, uint64_t len) = nullptr;
   bool (*writable)(uint64_t va, uint64_t len) = nullptr;
+  // Longest one hook call may run in wasm code before it traps (time in
+  // game code it calls does not count); ffxii_init gets ten times this.
+  // 0: no limit.
+  uint32_t time_limit_ms = 1000;
 };
 
 class Mod;

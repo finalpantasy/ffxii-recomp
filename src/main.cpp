@@ -22,6 +22,9 @@ void Usage() {
                "  --no-native-mods  load no mod DLLs (mod.ini native = ...); scripts still load\n"
                "         [--luau-interp]\n"
                "  --luau-interp     run Luau script mods in the interpreter (no native code)\n"
+               "         [--wasm-time-limit MS]\n"
+               "  --wasm-time-limit MS  longest one WebAssembly hook call may run in mod code\n"
+               "                    before it traps (default 1000, 0 for none; init gets 10x)\n"
                "       ffxii_recomp --mod-lab [--mod-lab-dir PATH] [--mod-lab-port N] [--no-browser]\n"
                "       ffxii_recomp --mod-lab-run [--mod-lab-dir PATH] [--mod-lab-iters N]\n"
                "                    [--mod-lab-reps N] [--mod-lab-only KEY,KEY]\n"
@@ -83,6 +86,8 @@ int main(int argc, char** argv) {
       SetSwitch("FFXII_MODS_NO_NATIVE", "1");
     } else if (arg == "--luau-interp") {
       SetSwitch("FFXII_LUAU_INTERP", "1");
+    } else if (arg == "--wasm-time-limit" && i + 1 < argc) {
+      SetSwitch("FFXII_WASM_TIME_LIMIT_MS", argv[++i]);
     } else if (arg == "--mods-watch") {
       SetSwitch("FFXII_MODS_WATCH", "1");
     } else if (arg == "--interp") {
