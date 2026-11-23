@@ -215,7 +215,7 @@ bool ParseModIni(const std::string& text, ModInfo& out, std::vector<std::string>
       out.language = val;  // a label for launchers and the mod lab
     } else if (key == "conflicts") {
       for (const auto& item : SplitList(val)) out.conflicts.push_back(item);
-    } else if (key == "native" || key == "scripts") {
+    } else if (key == "native" || key == "scripts" || key == "wasm") {
       for (const auto& item : SplitList(val)) {
         // Same rule on every host: no drive, no root, no parent step.
         if (item.find(':') != std::string::npos || item[0] == '/' || item[0] == '\\' ||
@@ -225,7 +225,7 @@ bool ParseModIni(const std::string& text, ModInfo& out, std::vector<std::string>
           ok = false;
           continue;
         }
-        (key == "native" ? out.native : out.scripts).push_back(item);
+        (key == "native" ? out.native : key == "scripts" ? out.scripts : out.wasm).push_back(item);
       }
     } else {
       errors.push_back("line " + std::to_string(n) + ": unknown key '" + key + "'");
@@ -277,6 +277,9 @@ Index Build(const std::string& root_s, const std::unordered_set<std::string>& di
     for (const auto& n : m.scripts)
       if (!fs::is_regular_file(d / fs::u8path(n), ec))
         ix.errors.push_back(folder + ": script '" + n + "' not found");
+    for (const auto& n : m.wasm)
+      if (!fs::is_regular_file(d / fs::u8path(n), ec))
+        ix.errors.push_back(folder + ": wasm module '" + n + "' not found");
     ix.mods.push_back(m);
   }
   ResolveRelations(ix.mods, ix.errors);
@@ -371,6 +374,7 @@ std::string Index::Report() const {
     o << "\n";
     for (const auto& n : m.native) o << "        native " << n << "\n";
     for (const auto& n : m.scripts) o << "        script " << n << "\n";
+    for (const auto& n : m.wasm) o << "        wasm " << n << "\n";
   }
   for (const auto& c : conflicts) {
     o << "  conflict " << c.path << ": " << c.winner << " over";
@@ -394,7 +398,8 @@ bool RanksAbove(const ModInfo& a, const ModInfo& b) { return Ranks(a, b); }
 std::vector<size_t> NativeLoadOrder(const Index& ix) {
   std::vector<size_t> out;
   for (size_t i = 0; i < ix.mods.size(); i++)
-    if (ix.mods[i].enabled && (!ix.mods[i].native.empty() || !ix.mods[i].scripts.empty()))
+    if (ix.mods[i].enabled && (!ix.mods[i].native.empty() || !ix.mods[i].scripts.empty() ||
+         !ix.mods[i].wasm.empty()))
       out.push_back(i);
   std::stable_sort(out.begin(), out.end(),
                    [&](size_t a, size_t b) { return Ranks(ix.mods[b], ix.mods[a]); });

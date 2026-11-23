@@ -246,6 +246,11 @@ void LoadNativeModules() {
                    lopt.native && luau::NativeSupported() ? " (native code)" : " (interpreter)",
                    ok ? "" : " failed: ", err.c_str());
     }
+    // WebAssembly modules are declared and checked by the index now; this
+    // build has no WASM runtime yet, so say so instead of skipping silently.
+    if (!m.wasm.empty())
+      std::fprintf(stderr, "[wasm] %s: %zu modules not loaded (no WASM runtime in this build)\n",
+                   m.id.c_str(), m.wasm.size());
   }
 }
 

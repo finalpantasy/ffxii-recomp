@@ -55,6 +55,14 @@ When the index is built, the recomp reads each patched or contested file from th
 
 The report (`mods-report.txt`, `--mods-list`) has a `merge <path>` block for each merged file. A line naming a record that does not exist or a field past the record's end is skipped and reported. `--mods-list` exits 1 on a patch line it could not apply.
 
+## WebAssembly modules (declared only)
+
+`wasm = a.wasm, lib/b.wasm` in `mod.ini` declares sandboxed WebAssembly modules
+(paths inside the mod folder). The index checks that each file exists and lists
+it in `mods-report.txt` and `--mods-list`, which exits 1 when one is missing.
+This build has no WASM runtime yet, so the game logs `[wasm] <id>: N modules
+not loaded` and runs without them.
+
 ## Luau scripts
 
 A mod runs Luau scripts listed in its `mod.ini`:

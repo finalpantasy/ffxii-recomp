@@ -183,6 +183,12 @@ int main() {
     CHECK(!ParseModIni("native = ../x.dll\n", bad, errs));
     CHECK(!ParseModIni("native = C:/x.dll\n", bad, errs));
     CHECK(bad.native.empty() && errs.size() == 2);
+    ModInfo w;
+    errs.clear();
+    CHECK(ParseModIni("wasm = a.wasm, lib/b.wasm\nscripts = c.luau\n", w, errs));
+    CHECK(w.wasm.size() == 2 && w.wasm[1] == "lib/b.wasm" && w.scripts.size() == 1 && errs.empty());
+    CHECK(!ParseModIni("wasm = ../x.wasm\n", bad, errs));
+    CHECK(bad.wasm.empty() && errs.size() == 1);
   }
 
   {

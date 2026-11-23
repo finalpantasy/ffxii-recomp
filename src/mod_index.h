@@ -43,6 +43,7 @@ struct ModInfo {
   std::string off_reason;  // why Build turned it off (empty: by mod.ini or flag)
   std::vector<std::string> native;  // native module DLLs, relative to root
   std::vector<std::string> scripts; // Luau scripts, relative to root (src/luau_mods.h)
+  std::vector<std::string> wasm;    // WebAssembly modules, relative to root (sandboxed)
   std::string language;             // mod.ini language: a label only (mod lab, launchers)
   std::string root;     // host folder of the mod (holds mod.ini)
   std::string dir;      // host folder holding the files
@@ -89,7 +90,8 @@ std::string Normalize(const std::string& path);
 // requires (comma list of id or id>=version), conflicts (comma list of ids),
 // native (comma list of native module DLLs inside the mod folder; see
 // include/ffxii_mod.h), scripts (comma list of Luau scripts inside the mod
-// folder; see src/luau_mods.h).
+// folder; see src/luau_mods.h), wasm (comma list of WebAssembly modules inside
+// the mod folder; sandboxed, loaded once a WASM runtime is built in).
 // Unknown keys are kept out of ModInfo and reported in `errors`.
 bool ParseModIni(const std::string& text, ModInfo& out, std::vector<std::string>& errors);
 
