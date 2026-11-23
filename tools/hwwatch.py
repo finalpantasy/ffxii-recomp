@@ -2,10 +2,12 @@
 Attach as a debugger, set hardware breakpoints (DR0-DR3) on the given host
 addresses in every thread (writes, or reads and writes with ":rw"), and print
 the RIP after each access with the current value, plus the exe's load base.
-Detaches after <seconds>. Guest VA = host - 0x20000000000 on the Windows
+Detaches after <seconds>. HWWATCH_POKE="addr,stride,count,byte;..." (hex
+addr/stride) writes those bytes at every hit, while the process is still stopped, and
+detaches after HWWATCH_POKE_HITS hits (default 1). Guest VA = host - 0x20000000000 on the Windows
 build; turn a RIP into a lifted function with llvm-nm (RVA = RIP - base, VA =
 0x140000000 + RVA). The game can stall while attached. Debugging tool only."""
-import ctypes, ctypes.wintypes as W, sys, time, struct
+import ctypes, ctypes.wintypes as W, os, sys, time, struct
 k = ctypes.WinDLL("kernel32", use_last_error=True)
 pid, secs = int(sys.argv[1]), float(sys.argv[2])
 watch = []
@@ -66,6 +68,19 @@ while time.time() < end:
             print(f"{time.time()-end+secs:7.2f}s tid {ev.tid} rip {rip:#x} {vals}", flush=True)
             cx(0x68, val=0); k.SetThreadContext(h, ctx)
             hits += 1
+            poke = os.environ.get("HWWATCH_POKE")
+            if poke:
+                k.WriteProcessMemory.argtypes = k.ReadProcessMemory.argtypes
+                hw = k.OpenProcess(0x0438, False, pid)
+                for spec in poke.split(";"):
+                    a, st, cnt, v = spec.split(",")
+                    for j in range(int(cnt)):
+                        n = ctypes.c_size_t()
+                        k.WriteProcessMemory(hw, int(a, 16) + j * int(st, 16), bytes([int(v)]), 1, ctypes.byref(n))
+                print("poked at hit", hits, flush=True)
+                if hits >= int(os.environ.get("HWWATCH_POKE_HITS", "1")):
+                    k.ContinueDebugEvent(ev.pid, ev.tid, cont)
+                    break
         elif exc == 0x80000003:  # attach breakpoint
             pass
         else:

@@ -42,15 +42,23 @@ the records differs between those two saves except three counters (+0x10,
 +0x2C, +0x50).
 
 The menus do not read this byte: an old save loaded with the mod shows Attack
-Power 250 on the Equip screen. Battles did not read it either, at least not
-after load: writing 250 into both tables right after the load (`tools/poke.py`)
-left the first hit at 39, the same as without the write (`win-poke2.log`,
-`win-poke3.log`). A read watch on the byte during load (`tools/hwwatch.py`)
-caught only the two block copies (f_002EF570) and f_00583CB0 at +0x1DD; with
-the debugger attached the game then stopped before the field.
+Power 250 on the Equip screen. Battles do. With no mod at all, `tools/hwwatch.py`
+stopped the game at the load's copy into the block (write breakpoints on the
+last record of each table) and wrote 250 into +0x36 of all 80 records before it
+went on; Reks's first hit was 883, against 39-43 without the write
+(`win-hwpoke1.log`). Writing the same bytes half a second after the copy
+(`tools/poke.py`, `win-poke2.log`, `win-poke3.log`) changed nothing, so the
+game builds its battle actors from this byte during the load itself. During the
+first fight nothing read the Broadsword's attack in the loaded equipment table
+(read watch, `win-wwatch1.log`).
 
-What builds a battle actor's attack, and whether an equip change refreshes it
-on an old save, is still open.
+So the save keeps each character's attack as computed when it was last set
+(New Game here), battles use that copy, and a table mod reaches an old save's
+battles only when something recomputes the byte. A mod that wants old saves to
+pick up new weapon stats can recompute +0x36 from the equipment table right
+after the load copies the block in, before the actors are built. The function
+that does that copy is not identified yet (the copy itself runs in a host
+memcpy).
 
 ## Tools
 
@@ -59,6 +67,7 @@ on an old save, is still open.
   0x20000000000).
 - `tools/poke.py <pid> <host addr> <stride> <count> <byte>`: wait until the
   first byte is non-zero, then overwrite one byte per record.
-- `tools/hwwatch.py`: hardware breakpoints on up to four host addresses.
+- `tools/hwwatch.py`: hardware breakpoints on up to four host addresses;
+  `HWWATCH_POKE` writes bytes while the game is stopped at a hit.
 
 All three use the Win32 debugging and memory APIs on a process you started.
