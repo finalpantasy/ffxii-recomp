@@ -266,6 +266,11 @@ Index Build(const std::string& root_s, const std::unordered_set<std::string>& di
     if (disabled.count(m.id)) m.enabled = false;
     m.dir = Utf8(d / "files");
     m.root = Utf8(d);
+    // A declared native module that is not there fails to load later; say
+    // so in the report, where launchers see it (--mods-list exits 1).
+    for (const auto& n : m.native)
+      if (!fs::is_regular_file(d / fs::u8path(n), ec))
+        ix.errors.push_back(folder + ": native module '" + n + "' not found");
     ix.mods.push_back(m);
   }
   ResolveRelations(ix.mods, ix.errors);

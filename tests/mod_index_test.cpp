@@ -197,6 +197,18 @@ int main() {
     CHECK(ResolveRoot("", exe.string(), game.string()) == exe.string() + "/mods");
   }
 
+  {
+    // Declared native modules must exist in the mod folder.
+    const fs::path nr = fs::temp_directory_path() / "ffxii_mod_index_native";
+    fs::remove_all(nr);
+    Put(nr / "nat" / "mod.ini", "id = nat\nnative = here.dll, bin/gone.dll\n");
+    Put(nr / "nat" / "here.dll", "x");
+    Index nx = Build(nr.string());
+    CHECK(nx.errors.size() == 1 && nx.errors[0].find("bin/gone.dll") != std::string::npos);
+    CHECK(nx.mods.size() >= 1 && nx.mods[0].enabled);
+    fs::remove_all(nr);
+  }
+
   fs::remove_all(root);
   std::printf("%s\n", g_fail ? "FAILED" : "ok");
   return g_fail ? 1 : 0;
