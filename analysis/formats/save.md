@@ -69,6 +69,41 @@ after each; `examples/luau-cached-attack/loadprobe.luau`). A Luau hook on
 made Reks's first hit 949 on the old save, with no table mod
 (`examples/luau-cached-attack/atk.luau`, `win-lhook2.log`).
 
+Changing equipment recomputes the byte from the loaded battle_pack, in the second
+table only. From the old Steam save, the Equip screen script
+(`build/run/input/eq12.txt`; menu presses work at low frame rates since SwARc
+a2a917d) equips Vaan's Dagger. Record 0 of the 0x21B290C table then changes at once:
+weapon 0x1070 to 0x106E, and Attack 31 to 14 with no mod (`win-eq18.log`) or 31 to
+250 with the attack-250 table mod (`win-eq19.log`). The record at 0x2166480 did not
+change in either run. At boot, before any save loads, the
+0x21B290C table already holds the New Game party computed from the loaded tables
+(250 and 255 with the mod), and the load then overwrites it. So an old save
+picks up a weapon table mod for each character the player re-equips, and a
+load-time recompute (`examples/luau-recompute-stats`) covers the rest.
+
+The Equip screen's recompute is 0x2FEF30, found with a write watch on record 0's
++0x36 (`hw-eq20.txt`: it writes 0, then 250); 0x30FED0 and 0x30A4E0 call it.
+Its arguments are (record + 8, out, equip): it reads the five item ids at
++0x50 of its pointer (+0x58 here) and writes 0x24 bytes at +0x24 (+0x2C to
++0x4F here: max HP u32, MP u16, four level-scaled byte stats, then attack,
+defense, magick resist and the evade bytes). With `out` set it writes there instead,
+a preview that leaves the record alone; with `equip` set it reads the item ids
+from there. Each item adds its table bytes by class (weapon +0x1A attack and +0x1D
+evade, shield +0x18 evade and +0x19 magick evade, armor +0x18 defense and +0x19
+magick resist), plus HP, MP and stat bonuses from the item's attribute record;
+details of the base terms are not traced. Called from a mod on the first field
+frame after a load (`examples/luau-game-recompute`), it set the old save's 40
+records to 250 or 255 under the attack-250 mod (`win-grc5.log`). Called with the
+record pointer itself (not + 8), or at 0x233C10 during the load, it zeroed the
+stats and the game faulted reading guest 0x24 (`win-grc1.log` to `win-grc3.log`).
+With no mod it changed 4 of the 40 records on that save (33 to 32, 19 to 14,
+12 to 14 and 20 to 15; `win-grc6.log`), and calling 0x30FED0(record + 8, 0)
+instead gave the same four (`win-grc7.log`). Two of them are a gun and a bow
+user, so the saved byte includes something this path leaves out, probably the
+ammunition's attack. The formula above matches the saved bytes, so
+`examples/luau-recompute-stats` stays the one to use; the game-function version
+is kept as a reference.
+
 The cached byte is min(255, weapon +0x1A + off-hand +0x1A), from battle_pack
 section 13. The record names the weapon at +0x58 and the off-hand at +0x5A (u16
 item ids, 0xFFFF empty; table index = id - 0x1000). Ammunition in the off-hand
