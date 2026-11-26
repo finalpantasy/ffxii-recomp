@@ -226,6 +226,9 @@ bool TickFrame() { return g_tick_now; }
 // Input order trace: FFXII_INPUT_TRACE=<frame> logs 300 events from that
 // limited frame on (pad/key reads, pacing, driver calls) with the tick flag.
 uint64_t g_frame_no = 0;
+// The driver that ran last and the frame it ran in (for the pad drain gate).
+Driver g_last_driver = kMain;
+uint64_t g_last_driver_frame = ~0ull;
 uint64_t TraceStart() {
   static const uint64_t v = [] {
     const char* e = recomp::Env("INPUT_TRACE");
@@ -244,6 +247,8 @@ void BeginUpdate(Driver d) {
   ++g_updates;
   ++g_driver_frame[d];
   g_tick_now = g_driver_updates[d]++ % uint64_t(SimMult()) == 0;
+  g_last_driver = d;
+  g_last_driver_frame = g_frame_no;
   TraceInput("driver", int(d));
 }
 // Pad and keyboard reads (SwARc g_input_hold): traced only. Holding the read
@@ -270,10 +275,24 @@ bool PadEveryFrame() {
   static const bool v = recomp::Env("PAD_EVERY_FRAME") != nullptr;
   return v;
 }
+// FFXII_PAD_KEEP_EDGES=1 leaves the edge words set on skipped drains (A/B).
+bool PadKeepEdges() {
+  static const bool v = recomp::Env("PAD_KEEP_EDGES") != nullptr;
+  return v;
+}
 void PadUpdateHook(::recomp::Ctx& c) {
   if (HighRate() && !g_tick_now && !PadEveryFrame()) {
     ++g_pad_skips;
     TraceInput("padupdate-skip", 0);
+    // Do what the drain does with an empty queue: clear the edge words
+    // (pressed, released, repeat and their copies; 0x36FE14..0x36FE3D), so an
+    // edge lasts one update. Left set, code that runs every update saw each
+    // press twice: Y opened the main menu and closed it again, B confirmed
+    // twice (2026-11-26, win-lead-in120a/b). Held words stay.
+    if (recomp::g_guest_base && !PadKeepEdges())
+      for (const uint64_t va : {0x2AD9E08ull, 0x2AD9E0Cull, 0x2AD9E10ull, 0x2AD9E24ull, 0x2AD9E28ull,
+                                0x2AD9E2Cull})
+        std::memset(recomp::g_guest_base + va, 0, 4);
     c.rsp += 8;  // ret
     return;
   }
@@ -290,6 +309,29 @@ void PadUpdateHook(::recomp::Ctx& c) {
     if (w[2] | w[3]) ++g_pad_pressed;
   }
 }
+// 0x35FCA0 (called from the per-frame callback 0x35EC90) queues one pad
+// sample per pad in the ring at 0x22CAE90 (write head, read head, 16
+// samples of 0x24 bytes, 0x294 bytes per pad). 0x35FF90 then lets the drain
+// take at most one sample per tick (0x184950), and the key-repeat and rumble
+// timers (pad +4/+5, 0x35FBD0; 0x35F690) count samples. Queued every
+// rendered frame at k*60 fps, the backlog sat at 9-13 of 16 samples, so
+// presses arrived about 10 ticks late or were overwritten
+// (win-lead-ring120.log), and key repeat ran k times faster: one dpdown
+// moved the menu cursor two rows (win-lead-fix120b). On in-between frames
+// no sample is queued, so the game sees its 60 Hz stream.
+recomp::GuestFn g_pad_sample_orig = nullptr;
+uint64_t g_pad_samples = 0, g_pad_sample_skips = 0;
+void PadSampleHook(::recomp::Ctx& c) {
+  if (HighRate() && !g_tick_now && !PadEveryFrame()) {
+    ++g_pad_sample_skips;
+    TraceInput("padsample-skip", 0);
+    c.rsp += 8;  // ret
+    return;
+  }
+  ++g_pad_samples;
+  TraceInput("padsample", 0);
+  g_pad_sample_orig(c);
+}
 void InstallPadUpdateHook() {
   static bool done = false;
   if (done) return;
@@ -297,6 +339,8 @@ void InstallPadUpdateHook() {
   if (!HighRate()) return;
   if (!recomp::SetEntryHook(0x36FDF0, &PadUpdateHook, &g_pad_update_orig) || !g_pad_update_orig)
     std::fprintf(stderr, "[frame_rate] pad update hook 36FDF0 not installed@");
+  if (!recomp::SetEntryHook(0x35FCA0, &PadSampleHook, &g_pad_sample_orig) || !g_pad_sample_orig)
+    std::fprintf(stderr, "[frame_rate] pad sample hook 35FCA0 not installed@");
 }
 uint64_t g_tick_hist[2][4] = {};  // ticks added per update: [tick update][0/1/2/3+]
 uint32_t Ticks() {
@@ -653,6 +697,8 @@ void f_006234A0(::recomp::Ctx& c) {
     std::fprintf(stderr, "[frame_rate]   pad update 36FDF0 runs %llu skipped %llu, presses seen on tick frames %llu\n",
                  (unsigned long long)g_pad_runs, (unsigned long long)g_pad_skips,
                  (unsigned long long)g_pad_pressed);
+    std::fprintf(stderr, "[frame_rate]   pad samples 35FCA0 queued %llu skipped %llu\n",
+                 (unsigned long long)g_pad_samples, (unsigned long long)g_pad_sample_skips);
     std::fprintf(stderr, "[frame_rate]   pad words on tick frames +4 %llu +8 %llu +C %llu +10 %llu\n",
                  (unsigned long long)g_pad_words[0], (unsigned long long)g_pad_words[1],
                  (unsigned long long)g_pad_words[2], (unsigned long long)g_pad_words[3]);
@@ -785,8 +831,19 @@ void f_0022A580(::recomp::Ctx& c) {
     // the last driver call left; when that was "no tick", the pause fade got
     // 0 ticks forever and the game stayed dimmed (alt-tab, 2026-11-26).
     // A driver called in this frame overrides it in BeginUpdate.
+    //
+    // When a driver ran in the last frame, predict its next call instead:
+    // the pad drain 0x36FDF0 runs before the driver in each frame and gates
+    // on this flag, so with the frame counter out of phase with the driver's
+    // own count it drained on in-between updates and skipped tick updates
+    // (presses then reached tick-frame logic only by luck; the main menu's
+    // Y was lost in 2 of 3 runs, 2026-11-26, win-lead-intrace.log).
     static uint64_t frames = 0;
-    g_tick_now = frames++ % uint64_t(SimMult()) == 0;
+    if (g_last_driver_frame == g_frame_no)
+      g_tick_now = g_driver_updates[g_last_driver] % uint64_t(SimMult()) == 0;
+    else
+      g_tick_now = frames % uint64_t(SimMult()) == 0;
+    ++frames;
   }
   ++g_frame_no;
   TraceInput("pace", 0);

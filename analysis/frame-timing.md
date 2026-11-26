@@ -430,3 +430,38 @@ for `--fps 120` were of that kind.
 - Not done: no restart prompt between 60, 120 and 240 (the game field does
   not change); the label cache in `mods.cpp` does not refresh on mods hot
   reload; rates that are not multiples of 60 need a fractional frames-per-tick.
+
+## Pad input at k*60 fps (2026-11-26)
+
+The game's pad input is a ring of samples per pad at 0x22CAE90 (byte 0 write
+head, byte 1 read head, 16 samples of 0x24 bytes, 0x294 bytes per pad).
+- Producer: the per-frame callback 0x35EC90 calls 0x35FCA0 (one pad:
+  0x35FDD0), which reads the pad (0x35F420), computes pressed/released
+  (0x35FAC0) and key repeat (0x35FBD0, timers at pad +4/+5 counted in
+  samples), and steps rumble (0x35F690, also counted in samples).
+- Consumer: 0x35FF90 (one pad: 0x360019) moves the read head by at most
+  0x184950() samples and stores the count at 0x22CAE98; the drain 0x36FDF0
+  ORs that many samples into the pad words at 0x2AD9E04. Both are called
+  back to back at five sites (0x22A7EC, 0x22AF6D, 0x22B013, 0x22B8FE,
+  0x22BC46).
+- PhyreEngine's own XInput layer (0x7A2140, object at guest 0x3E76EC0,
+  button bytes +0x43C..0x44B, virtual getter 0x79D670) feeds 0x79D010,
+  which posts change events; the menus and field get their presses from
+  the ring, not from these events.
+
+At `--fps 120`, with a sample queued every rendered frame and one taken per
+tick, the backlog sat at 9-13 of 16 samples (`win-lead-ring120.log`):
+presses arrived about 10 ticks late or were overwritten. Taking k samples
+per tick removed the backlog but key repeat then ran k times faster (one
+dpdown moved the cursor two rows, `win-lead-fix120b`). The fix skips
+0x35FCA0 on in-between frames (`PadSampleHook` in `src/frame_rate.cpp`),
+so the game gets its 60 Hz sample stream; the backlog is now 0-2 samples.
+Verified: 7 dpdowns moved the Graphics Settings cursor exactly 7 rows and 5
+dprights stepped Frame Rate Limit 120, 240, 30, 60, 120, 240
+(`win-lead-fix120c..f`, 71% machine load). `FFXII_PAD_EVERY_FRAME=1`
+turns off the drain and sample gates for A/B.
+
+Two related changes from the same day: skipped drains clear the edge words
+(pressed, released, repeat) as an empty drain does, and the pacing wrapper
+predicts the next driver call's tick phase, so the drain runs on tick
+frames (`FFXII_INPUT_TRACE`, `win-lead-intrace.log`).
