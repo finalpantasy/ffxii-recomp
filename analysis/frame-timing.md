@@ -465,3 +465,26 @@ Two related changes from the same day: skipped drains clear the edge words
 (pressed, released, repeat) as an empty drain does, and the pacing wrapper
 predicts the next driver call's tick phase, so the drain runs on tick
 frames (`FFXII_INPUT_TRACE`, `win-lead-intrace.log`).
+
+## Rates in steps of 30 fps (2026-11-26)
+
+`--fps N` (`FFXII_FPS=N`) now takes any multiple of 30 from 60 up: 90, 120, 150, 180, 240. `FFXII_SIM_MULT=k` still works and means 60k. In `src/frame_rate.cpp` the integer k became the rate R:
+
+- `Per()` = R / 30 is the game's whole frames per 30 Hz step (0x1DFE0B4), so R has to be a multiple of 30. Rates like 144 or 165 would need fractional frames per step; see the plan below.
+- `TickAt(n)` = (n·60) mod R < 60 picks the tick updates: every second update at 120, two of every three at 90.
+- The limiter, the debt interval, the pacing step, the filter and decay rescales and the oscillator step use R / 60 as a real number.
+
+Two fixes came out of the 90 fps test:
+
+1. **VSync field.** The settings object follows the key table at 0x1DFD050: Language, Resolution, ScreenMode, Quality, Brightness, VSync, ... FrameLimit is key 18 (+0x48), as before. VSync is key 5 (+0x14). The present-interval callback had read +0x0C, which is Quality, so it asked for interval 1 with `VSync=Off`.
+2. **Catch-up body.** 0x17D6E0 runs its body 0x22A490 a second time when the frame-time debt (0x1F82D28) reaches one frame, and sets [0x1F7F4B8] = 1 for that pass (0x17D846). The game-thread pacing in 0x22A580 had made that second body wait a full step as well. It then took exactly the time it was meant to pay back, the debt never fell, and every present ran two bodies: at 90 fps the game presented exactly 45 with 90 updates (`win-any90b.log`). Catch-up bodies now skip the wait and do not advance the schedule.
+
+Verified (`fight7-x.txt`, Inner Ward save, `data-iw-nv`):
+
+| Run | Machine load | Presented fps (calm field) | Ticks per second | Doubled frames per 5 s |
+|---|---|---|---|---|
+| `win-any90c.log` (90 fps) | 88-96% | 89.9 | 60.0 | 0-7 |
+| `win-any120c.log` (120 fps) | 44-73% | 116-120 for the whole run | 60.0 | 0-26 |
+| `win-any120.log` (120 fps, before the fix) | 80-85% | 87-107 | 59 | up to 156 |
+
+Plan for 144 and 165: frames per step would be 4.8 and 5.5. The multiply sites in `analysis/maps/frame-global-reads.tsv` would get hooks that rewrite N × B4 to round(N × R / 30). The float reads would get R / 30, and the `fps_div` share would become floor((i+1)·a·30/R) − floor(i·a·30/R). This needs a relift.

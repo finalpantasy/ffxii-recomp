@@ -36,7 +36,7 @@ struct Mat4 {
 // 0x1DFD050 (setter 0x1DF340); FrameLimit is index 18, +0x48 (0 = 30 fps).
 inline constexpr Global<uint64_t> kSettings{0x1F82D20};
 inline constexpr uint64_t kSettingFrameLimit = 0x48;
-inline constexpr uint64_t kSettingVSync = 0x0C;  // Graphics Settings > Vsync, nonzero = On
+inline constexpr uint64_t kSettingVSync = 0x14;  // key 5 "VSync" (0x0C is "Quality"), nonzero = On
 
 // --- Frame timing (set by 0x1EDDC0 from the FrameLimit setting) ---
 // Frames per 30 Hz tick: 1 at 30 fps, 2 at 60 fps (2k at --fps 60k).
@@ -49,6 +49,9 @@ inline constexpr Global<float> kFrameTimeScale{0x1DFE0BC};
 inline constexpr Global<int32_t> kStep30HzFlag{0x1DFE0C0};
 // Nonzero in 60 fps mode (getter 0x1EDE70).
 inline constexpr Global<int32_t> kFps60Flag{0x1F82E38};
+// 0x17D6E0 sets 1 while it repeats the frame body to pay back frame-time debt
+// (0x17D846), 0 at the start of each frame.
+inline constexpr Global<int32_t> kFrameRepeat{0x1F7F4B8};
 // The 1/60 s tick counter: 60 a second at real game speed.
 inline constexpr Global<uint32_t> kTicks{0x208F570};
 // Ticks of the current frame, returned by 0x184950 (1 at 60 fps).

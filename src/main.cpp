@@ -38,7 +38,7 @@ void Usage() {
                "  --interp-no-pace  present the blended and real frame together (testing)\n"
                "  --interp-t T      blend point between the frames, 0..1 (default 0.5)\n"
                "         [--fps N]\n"
-               "  --fps N           native frame rate, a multiple of 60 (120, 180, 240):\n"
+               "  --fps N           native frame rate, a multiple of 30 (90, 120, 150, 240):\n"
                "                    the game updates N times a second at unchanged speed;\n"
                "                    needs FrameLimit 60 in the game's settings\n";
 }
@@ -105,13 +105,13 @@ int main(int argc, char** argv) {
     } else if (arg == "--interp-t" && i + 1 < argc) {
       SetSwitch("FFXII_D3D_INTERP_T", argv[++i]);
     } else if (arg == "--fps" && i + 1 < argc) {
-      // src/frame_rate.cpp reads FFXII_SIM_MULT: updates per 1/60 s tick.
+      // src/frame_rate.cpp reads FFXII_FPS: updates per second.
       const int fps = std::atoi(argv[++i]);
-      if (fps < 60 || fps % 60 != 0) {
-        std::cerr << "--fps takes a multiple of 60\n";
+      if (fps < 60 || fps % 30 != 0) {
+        std::cerr << "--fps takes a multiple of 30, at least 60\n";
         return 2;
       }
-      SetSwitch("FFXII_SIM_MULT", std::to_string(fps / 60));
+      SetSwitch("FFXII_FPS", std::to_string(fps));
     } else if (arg == "--") {
       for (int j = i + 1; j < argc; j++) {
         if (!game_args.empty()) game_args += ' ';

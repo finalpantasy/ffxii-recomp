@@ -105,19 +105,33 @@ void f_0032AE70_lifted(::recomp::Ctx& c);
 
 namespace {
 // Set at startup (0x1EDDC0) from the Frame Rate Limit choice saved by the
-// options menu (fps_menu.h), unless --fps / FFXII_SIM_MULT gives one.
-int g_menu_mult = 0;
-int EnvSimMult() {
-  static const int k = [] {
-    const char* e = recomp::Env("SIM_MULT");
-    return e ? std::atoi(e) : 0;
+// options menu (fps_menu.h), unless --fps (FFXII_FPS) or FFXII_SIM_MULT=k
+// (60k fps) gives one.
+int g_menu_rate = 0;
+// The update rate requested on the command line, or 0. The game keeps whole
+// frames per 30 Hz step in 0x1DFE0B4, so the rate is a multiple of 30 (60,
+// 90, 120, 150, 180, 240, ...); other values are rounded down.
+int EnvRate() {
+  static const int r = [] {
+    int v = 0;
+    if (const char* e = recomp::Env("FPS"))
+      v = std::atoi(e);
+    else if (const char* m = recomp::Env("SIM_MULT"))
+      v = 60 * std::atoi(m);
+    return v >= 60 ? v / 30 * 30 : 0;
   }();
-  return k;
+  return r;
 }
-int SimMult() {
-  if (const int k = EnvSimMult(); k > 0) return k;
-  return g_menu_mult > 0 ? g_menu_mult : 1;
+// Updates (and presented frames) per second in 60 fps mode.
+int Rate() {
+  if (const int r = EnvRate(); r > 0) return r;
+  return g_menu_rate >= 60 ? g_menu_rate / 30 * 30 : 60;
 }
+// Frames per 30 Hz step, the game's 0x1DFE0B4: 2 at 60 fps, rate / 30 here.
+uint32_t Per() { return uint32_t(Rate() / 30); }
+// Update n (counted from 0) is a tick update when it crosses a 1/60 s
+// boundary: at 120 fps every second one, at 90 fps two of every three.
+bool TickAt(uint64_t n) { return (n * 60) % uint64_t(Rate()) < 60; }
 // FFXII_SKIP_DRIVER=k: the limiter runs k times per 1/60 s, and the per-frame
 // driver 0x250540 (update and task lists) runs on every k-th frame only.
 int SkipDriver() {
@@ -127,7 +141,7 @@ int SkipDriver() {
   }();
   return k;
 }
-int LimitDiv() { return SimMult() > SkipDriver() ? SimMult() : SkipDriver(); }
+double LimitDiv() { return Rate() / 60.0 > SkipDriver() ? Rate() / 60.0 : double(SkipDriver()); }
 uint64_t g_frames = 0;  // limited frames so far
 
 // With FFXII_SKIP_DRIVER=k > 1, a driver call runs only when a 1/60 s tick of
@@ -195,27 +209,25 @@ void MaybeCamLog() {
 
 void f_001EDDC0(::recomp::Ctx& c) {
   const bool fps60 = uint32_t(c.rcx) != 0;
-  if (fps60 && EnvSimMult() <= 0) {
+  if (fps60 && EnvRate() <= 0) {
     const int saved = ::ffxii::fps_menu::SavedRate();
-    if (saved == 120 || saved == 240) g_menu_mult = saved / 60;
+    if (saved == 120 || saved == 240) g_menu_rate = saved;
   }
   f_001EDDC0_lifted(c);
-  const int k = SimMult();
-  if (!fps60 || k <= 1) return;
-  uint8_t* B = recomp::g_guest_base;
-  const int32_t ticks = 2 * k;
+  if (!fps60 || Rate() <= 60) return;
+  const int32_t ticks = int32_t(Per());
   const float fticks = float(ticks), scale = 1.0f / float(ticks);
   ::ffxii::guest::kFramesPerTick.Set(ticks);
   ::ffxii::guest::kFramesPerTickF.Set(fticks);
   ::ffxii::guest::kFrameTimeScale.Set(scale);
-  std::fprintf(stderr, "[frame_rate] SIM_MULT=%d: %d frames per 30 Hz tick, scale %g\n", k, ticks, scale);
+  std::fprintf(stderr, "[frame_rate] %d fps: %d frames per 30 Hz tick, scale %g\n", Rate(), ticks, scale);
 }
 
 namespace {
 // Native k*60 fps (SIM_MULT=k in 60 fps mode): only every k-th frame is a
 // tick frame, where 1/60 s of tick-counted game time passes.
 bool HighRate() {
-  return SimMult() > 1 && ::ffxii::guest::kFps60Flag.Get() != 0;
+  return Rate() > 60 && ::ffxii::guest::kFps60Flag.Get() != 0;
 }
 // A behind game runs 2-3 updates (driver calls) per presented frame, so
 // tick frames are counted in updates, not in limited frames.
@@ -259,7 +271,7 @@ void TraceInput(const char* what, int arg) {
 void BeginUpdate(Driver d) {
   ++g_updates;
   ++g_driver_frame[d];
-  g_tick_now = g_driver_updates[d]++ % uint64_t(SimMult()) == 0;
+  g_tick_now = TickAt(g_driver_updates[d]++);
   g_last_driver = d;
   g_last_driver_frame = g_frame_no;
   TraceInput("driver", int(d));
@@ -397,7 +409,7 @@ void f_00184950(::recomp::Ctx& c) {
 void f_0032AE70(::recomp::Ctx& c) {
   f_0032AE70_lifted(c);
   if (!HighRate()) return;
-  const float f = float(std::pow(0.5, 1.0 / (2.0 * SimMult())));
+  const float f = float(std::pow(0.5, 30.0 / Rate()));
   ::ffxii::guest::kDecayPerFrame.Set(f);
 }
 
@@ -408,7 +420,7 @@ void f_001EDEC0(::recomp::Ctx& c) {
   const uint32_t counter = uint32_t(c.rcx);
   f_001EDEC0_lifted(c);
   const int32_t flag = ::ffxii::guest::kStep30HzFlag.Get();
-  if (HighRate() && flag == 0) c.rax = counter % uint32_t(2 * SimMult()) == 0 ? 1 : 0;
+  if (HighRate() && flag == 0) c.rax = counter % Per() == 0 ? 1 : 0;
 }
 
 // Instruction-level fixes for k*60 fps (manifest `hook` lines, which run
@@ -430,7 +442,7 @@ void LogFilter(uint64_t va, float before, float after) {
 bool FpsHook(recomp::Ctx& c, uint64_t va, const char* name) {
   (void)name;
   uint8_t* B = recomp::g_guest_base;
-  const uint32_t per = uint32_t(2 * SimMult());  // frames per 30 Hz step
+  const uint32_t per = Per();  // frames per 30 Hz step
   if (va == 0x1D4965) {
     // Config > Graphics Settings > Frame Rate Limit. The retail row flips
     // FrameLimit (esi = new value, about to be stored); step through 30, 60,
@@ -441,7 +453,7 @@ bool FpsHook(recomp::Ctx& c, uint64_t va, const char* name) {
     const bool field60 = ::ffxii::guest::kSettings.Get() &&
                          *::ffxii::guest::At<uint32_t>(::ffxii::guest::kSettings.Get() +
                                                        ::ffxii::guest::kSettingFrameLimit) == 1;
-    const int cur = ::ffxii::fps_menu::Choice(field60, 60 * SimMult());
+    const int cur = ::ffxii::fps_menu::Choice(field60, Rate());
     int i = 0;
     while (i < 3 && rates[i] != cur) ++i;
     i = (i + ((uint8_t(c.rbx) != 0) ? 3 : 1)) % 4;
@@ -523,7 +535,7 @@ bool FpsHook(recomp::Ctx& c, uint64_t va, const char* name) {
       // s at k=1. Keep that 1/60 s at k*60: add k steps.
       if (HighRate()) {
         const uint32_t step = uint32_t(c.rax) & 0xFFFFu;
-        c.rax = (c.rax & ~0xFFFFull) | ((step * uint32_t(SimMult())) & 0xFFFFu);
+        c.rax = (c.rax & ~0xFFFFull) | (uint32_t(std::lround(step * (Rate() / 60.0))) & 0xFFFFu);
         static const bool log = recomp::Env("SPEEDLOG") != nullptr;
         static int logged = 0;
         if (log && logged < 8) {
@@ -573,7 +585,7 @@ bool FpsHook(recomp::Ctx& c, uint64_t va, const char* name) {
       std::memcpy(&v, c.xmm[reg].b, 4);
       const double keep = va == 0x32D4E3 ? 5.0 / 6.0 : 2.0 / 3.0;
       const double target = va == 0x32D4E3 ? 6.0 * v - 5.0 * f : 3.0 * v - 2.0 * f;
-      const double a = 1.0 - std::pow(keep, 1.0 / SimMult());
+      const double a = 1.0 - std::pow(keep, 60.0 / Rate());
       v = float(f + (target - f) * a);
       std::memcpy(c.xmm[reg].b, &v, 4);
       LogFilter(va, f, v);
@@ -591,14 +603,14 @@ bool FpsHook(recomp::Ctx& c, uint64_t va, const char* name) {
       if (HighRate()) {
         double v;
         std::memcpy(&v, c.xmm[6].b, 8);
-        v /= SimMult();
+        v *= 60.0 / Rate();
         std::memcpy(c.xmm[6].b, &v, 8);
       }
       return true;
     case 0x62369C: {
       // The limiter 0x6234A0 has loaded its 1/60 s interval (0x9010A0 or
       // 0x900378) into xmm0; at k*60 fps it waits 1/(60k) s.
-      const int k = LimitDiv();
+      const double k = LimitDiv();
       if (k > 1) {
         double v;
         std::memcpy(&v, c.xmm[0].b, 8);
@@ -646,7 +658,7 @@ void f_006234A0(::recomp::Ctx& c) {
   recomp::ffxii::CbScanFrame();
   MaybeCamLog();
   recomp::ffxii::SpeedLog();
-  const int k = LimitDiv();
+  const double k = LimitDiv();
   uint8_t* B = recomp::g_guest_base;
   if (k <= 1) {
     f_006234A0_lifted(c);
@@ -833,11 +845,19 @@ uint64_t g_handler_skips = 0;
 void f_0022A580(::recomp::Ctx& c) {
   if (HighRate()) {
     static uint64_t next = 0;
-    const uint64_t step = 1000000000ull / uint64_t(60 * SimMult());
-    const uint64_t now = recomp::platform::MonotonicNs();
-    if (next == 0 || now > next + 4 * step) next = now;
-    if (now < next) recomp::platform::SleepUntilNs(next);
-    next += step;
+    const uint64_t step = 1000000000ull / uint64_t(Rate());
+    // 0x17D6E0 runs its body 0x22A490 (which calls this) a second time when
+    // the frame-time debt reaches one frame, with [0x1F7F4B8] = 1. That
+    // catch-up body must not wait a step: when it did, it took as long as
+    // the time it was paying back, the debt never fell, and every present
+    // ran two bodies (90 fps presented 45, win-any90b.log).
+    const bool catch_up = ::ffxii::guest::kFrameRepeat.Get() != 0;
+    if (!catch_up) {
+      const uint64_t now = recomp::platform::MonotonicNs();
+      if (next == 0 || now > next + 4 * step) next = now;
+      if (now < next) recomp::platform::SleepUntilNs(next);
+      next += step;
+    }
     // Frames that run no driver (pause, and the fade out of it) still need
     // every k-th frame to be a tick frame: the timeline module's 0x184950
     // calls are gated by TickFrame(). Without this the flag kept whatever
@@ -853,9 +873,9 @@ void f_0022A580(::recomp::Ctx& c) {
     // Y was lost in 2 of 3 runs, 2026-11-26, win-lead-intrace.log).
     static uint64_t frames = 0;
     if (g_last_driver_frame == g_frame_no)
-      g_tick_now = g_driver_updates[g_last_driver] % uint64_t(SimMult()) == 0;
+      g_tick_now = TickAt(g_driver_updates[g_last_driver]);
     else
-      g_tick_now = frames % uint64_t(SimMult()) == 0;
+      g_tick_now = TickAt(frames);
     ++frames;
   }
   ++g_frame_no;
