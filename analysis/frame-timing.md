@@ -308,3 +308,70 @@ Diagnostics: `FFXII_SPEEDLOG=1` logs every 5 s:
 - the limiter's wait and frames per present.
 
 It works at 60 fps too, for a baseline.
+
+## Survey of frame-global readers (2026-11-26)
+
+`tools/survey_frame_globals.py` disassembles every function in
+`analysis/maps/functions.tsv` and records each access to the three globals,
+with the first instruction that uses the loaded value. Output:
+`analysis/maps/frame-global-reads.tsv` (437 sites). Linear disassembly finds
+fewer sites than Ghidra's reference counts (210 against 219, 47 against 71,
+181 against 260), so the table is a lower bound.
+
+| Global | Sites | Functions |
+|---|---|---|
+| 0x1DFE0B4, int frames per 30 Hz tick | 210 | 116 |
+| 0x1DFE0B8, the same as a float | 47 | 39 |
+| 0x1DFE0BC, float time scale | 181 | 82 |
+
+Uses of 0x1DFE0B4:
+
+| Use | Sites | Pattern |
+|---|---|---|
+| Multiply (`imul`, `lea x*3/5/8`, `shl`) | 125 | ticks to frames: `timer = N * B4`, then the timer counts down 1 per update |
+| Divide (`div [B4]`) | 35 | a per-tick amount to a per-update step: `2 / B4`, `0x20 / B4` |
+| Convert to float | 25 | float math, mostly 0x32Axxx-0x32Dxxx (camera and easing) |
+| Other | 25 | add, sub, compare, register copies; read by hand |
+
+The two floats are only multiplied, divided and added. They can hold any
+value, so they need no per-site work.
+
+**What this means for any frame rate.** If the game updates once per
+presented frame at a chosen rate R, 0x1DFE0B4 should be R/30.
+
+- For R a multiple of 30 (30, 60, 90, 120, 150, 180, 240), R/30 is a whole
+  number. The multiply and float sites need nothing. The tick counter must
+  then advance every R/60 updates; that is 1.5 at R = 90, so the
+  every-k-th-call gate in `src/frame_rate.cpp` becomes an accumulator.
+- The divide sites truncate. `2 / B4` is already 0 at 120 fps, which is why
+  0x250730's tick add is hooked. Each divide needs a per-site step with a
+  carried remainder, so that the steps sum to the per-tick amount.
+- For R not a multiple of 30 (144, 165), R/30 is fractional, and every
+  multiply site needs a hook that writes round(N × R / 30), and every
+  convert-to-float site the exact value. The manifest `hook` directive can
+  do this; most sites are one load followed by one `imul`, so the hook list
+  can be generated from the survey table.
+
+**Narrow fields.** About 18 multiply sites store the product in a byte and
+about 29 in a 16-bit word (the first narrow store within a few instructions
+of the multiply, so the count is approximate). A byte timer holds
+255 updates, so `N * B4` overflows once N × R / 30 > 255. Two sites already
+overflow in the shipped 60 fps mode:
+
+- 0x3399B0 stores `B4 * 150` in the byte at +0xB4, which counts down by 1
+  per update (0x33995E). At 30 fps that is 150 updates (5 s). At 60 fps 300
+  wraps to 44, so the wait is 0.73 s instead of 5 s; at `--fps 120` 600
+  wraps to 88, again 0.73 s. What the timer controls is not known yet.
+- 0x425BC8 caps a signed byte counter (+0x456, +0x457) at `B4 * 90`. At
+  60 fps the cap, 180, reads back as -76 through `movsx`. The compare
+  against `B4 * 3` that follows is unsigned, so the counter still passes it;
+  the effect is not known.
+
+Higher rates need these fields widened: either the lifted code stores the
+full value into a side table keyed by the field address, or the hook clamps
+and scales the countdown. This is the main cost of rates above about 120.
+
+Not covered: code that counts frames without reading 0x1DFE0B4 (fixed
+`cmp counter, 60` style constants and the 136 callers of the 60 fps helpers
+0x1EDDA0, 0x1EDE80 and 0x1EDEC0). The four hard-coded sites already hooked
+for `--fps 120` were of that kind.

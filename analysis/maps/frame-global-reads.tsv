@@ -1,0 +1,439 @@
+func	va	global	insn	use	use_insn
+18d3f0	18d552	B4	mov eax, dword ptr [rip + 0x1c70b5c]	lea	18d558 lea ecx, [rax + rax*4]
+18eee0	18f0ed	B4	mov eax, dword ptr [rip + 0x1c6efc1]	lea	18f0f3 lea edx, [rax + rax*4]
+1aa2c0	1aa2c0	B4	mov eax, dword ptr [rip + 0x1c53dee]	to_float	1aa2ed cvtsi2ss xmm0, rax
+1aa2c0	1aa324	B4	mov eax, dword ptr [rip + 0x1c53d8a]	to_float	1aa32a cvtsi2ss xmm0, rax
+1d8d40	1d8d40	B4	mov eax, dword ptr [rip + 0x1c2536e]	mul	1d8d46 imul eax, edx
+1d8d40	1d8d4c	B4	mov eax, dword ptr [rip + 0x1c25362]	mul	1d8d52 imul eax, r8d
+1d8fc0	1d8fc0	B4	mov eax, dword ptr [rip + 0x1c250ee]	mul	1d8fc6 imul eax, edx
+1eddc0	1eddd8	B8	movss dword ptr [rip + 0x1c102d8], xmm0	WRITE	
+1eddc0	1edde0	BC	movss dword ptr [rip + 0x1c102d4], xmm1	WRITE	
+1eddc0	1eddf2	B4	mov dword ptr [rip + 0x1c102b8], 2	WRITE	
+228c70	2291f2	B4	mov eax, dword ptr [rip + 0x1bd4ebc]	lea	2291f8 lea ebx, [rax + rax*4]
+22a0b0	22a19a	B4	div dword ptr [rip + 0x1bd3f14]	divisor(mem)	
+233780	2337de	B8	movss xmm0, dword ptr [rip + 0x1bca8d2]	mul	2337e8 mulss xmm0, dword ptr [rip + 0x6c5590]
+235720	2357de	B8	movss xmm0, dword ptr [rip + 0x1bc88d2]	mul	2357e8 mulss xmm0, dword ptr [rip + 0x6c3590]
+235ea0	235ec0	B8	movss xmm1, dword ptr [rip + 0x1bc81f0]	mul	235ec8 mulss xmm1, dword ptr [rip + 0x6c2eb0]
+235fb0	235fff	B8	movss xmm0, dword ptr [rip + 0x1bc80b1]	mul	236009 mulss xmm0, dword ptr [rip + 0x6c2d6f]
+24b9b0	24bbfc	BC	movss xmm7, dword ptr [rip + 0x1bb24b8]	copy:movaps	24bc04 movaps xmm6, xmm7
+250730	250741	B4	div dword ptr [rip + 0x1bad96d]	divisor(mem)	
+252a20	252a2b	B4	div dword ptr [rip + 0x1bab683]	divisor(mem)	
+252a70	252a9d	B4	div dword ptr [rip + 0x1bab611]	divisor(mem)	
+258d70	258d8c	B4	mov ebx, dword ptr [rip + 0x1ba5322]	overwritten	
+258e40	258e58	B4	div dword ptr [rip + 0x1ba5256]	divisor(mem)	
+25df00	25df67	BC	movss xmm1, dword ptr [rip + 0x1ba014d]	mul	25df7b mulss xmm1, xmm2
+263230	263419	BC	movss xmm1, dword ptr [rip + 0x1b9ac9b]	mul	263424 mulss xmm1, xmm0
+263560	263602	BC	movss xmm1, dword ptr [rip + 0x1b9aab2]	mul	26360a mulss xmm1, xmm6
+2644e0	2644ea	BC	movss xmm0, dword ptr [rip + 0x1b99bca]	mul	2644f2 mulss xmm0, dword ptr [rip + 0x6b122e]
+265860	265871	B4	imul ebx, dword ptr [rip + 0x1b9883c]	mul(mem)	
+265880	26589f	B4	imul ebx, dword ptr [rip + 0x1b9880e]	mul(mem)	
+265ff0	266507	BC	movss xmm1, dword ptr [rip + 0x1b97bad]	mul	266512 mulss xmm1, xmm0
+2673d0	269355	B4	mov eax, dword ptr [rip + 0x1b94d59]	to_float	26935b cvtsi2ss xmm0, rax
+2673d0	2695f6	B4	div dword ptr [rip + 0x1b94ab8]	divisor(mem)	
+2673d0	269c41	BC	movss xmm0, dword ptr [rip + 0x1b94473]	mul	269c49 mulss xmm0, xmm1
+2673d0	26ab2f	BC	mulss xmm3, dword ptr [rip + 0x1b93585]	mul(mem)	
+2673d0	26ac06	BC	mulss xmm3, dword ptr [rip + 0x1b934ae]	mul(mem)	
+2673d0	26ac76	BC	mulss xmm3, dword ptr [rip + 0x1b9343e]	mul(mem)	
+2673d0	26c1b2	B4	cmp eax, dword ptr [rip + 0x1b91efc]	cmp_reg	
+2673d0	26c33b	BC	divss xmm0, dword ptr [rip + 0x1b91d79]	divss(mem)	
+2673d0	26c361	B4	movzx ecx, word ptr [rip + 0x1b91d4c]	add	26c368 add cx, r8w
+2673d0	26c377	B4	mov eax, dword ptr [rip + 0x1b91d37]	to_float	26c37d cvtsi2ss xmm0, rax
+2673d0	26c38e	B4	movzx ecx, word ptr [rip + 0x1b91d1f]	add	26c39c add cx, r8w
+2673d0	26c449	BC	movss xmm1, dword ptr [rip + 0x1b91c6b]	mul	26c457 mulss xmm1, xmm6
+2673d0	26c627	BC	movss xmm1, dword ptr [rip + 0x1b91a8d]	mul	26c635 mulss xmm1, xmm6
+2673d0	26cc97	BC	movss xmm1, dword ptr [rip + 0x1b9141d]	mul	26cca9 mulss xmm1, xmm0
+26d630	26d636	BC	mulss xmm3, dword ptr [rip + 0x1b90a7e]	mul(mem)	
+26d6a0	26d6a5	BC	movss xmm1, dword ptr [rip + 0x1b90a0f]	mul	26d6b9 mulss xmm1, xmm2
+26d6d0	26d6d0	BC	movss xmm1, dword ptr [rip + 0x1b909e4]	mul	26d6db mulss xmm1, xmm0
+26d6f0	26d776	B8	movss xmm0, dword ptr [rip + 0x1b9093a]	mul	26d77e mulss xmm0, dword ptr [rip + 0x68b5fa]
+26d810	26d86d	B8	movss xmm0, dword ptr [rip + 0x1b90843]	mul	26d875 mulss xmm0, dword ptr [rip + 0x68b503]
+26db10	26db1b	B4	div dword ptr [rip + 0x1b90593]	divisor(mem)	
+289bd0	289c8b	B4	movsx eax, word ptr [rip + 0x1b74422]	mul	289c92 imul ecx, eax, 0x3c
+289d70	289e21	B4	mov edx, dword ptr [rip + 0x1b7428d]	mul	289e27 imul r9d, edx, 0x3c
+28a350	28a3bb	B4	div dword ptr [rip + 0x1b73cf3]	divisor(mem)	
+28a350	28a3d7	B4	mov edx, dword ptr [rip + 0x1b73cd7]	mul	28a3dd imul ecx, edx, 0x3c
+28a350	28a40f	B4	mov r8d, dword ptr [rip + 0x1b73c9e]	mul	28a416 imul ecx, r8d, 0x3c
+28a350	28a4b3	B4	imul eax, dword ptr [rip + 0x1b73bfa], 0x3c	mul(mem)	
+28a550	28a5a6	B4	div dword ptr [rip + 0x1b73b08]	divisor(mem)	
+28a620	28a6fc	B4	div dword ptr [rip + 0x1b739b2]	divisor(mem)	
+28aaa0	28ab21	B4	imul ecx, dword ptr [rip + 0x1b7358c], 0x3c	mul(mem)	
+28bb50	28bc4e	BC	movss xmm0, dword ptr [rip + 0x1b72466]	mul	28bc66 mulss xmm0, xmm4
+28bb50	28bc6f	B8	movss xmm0, dword ptr [rip + 0x1b72441]	mul	28bc7a mulss xmm0, dword ptr [rip + 0x689f1a]
+28bb50	28bc9e	BC	movss xmm0, dword ptr [rip + 0x1b72416]	mul	28bca6 mulss xmm0, xmm4
+28bb50	28bdab	BC	movss xmm0, dword ptr [rip + 0x1b72309]	mul	28bdb3 mulss xmm0, xmm10
+28bb50	28bee3	BC	movss xmm2, dword ptr [rip + 0x1b721d1]	copy:movaps	28bef3 movaps xmm0, xmm2
+28bb50	28c0ae	BC	movss xmm0, dword ptr [rip + 0x1b72006]	mul	28c0b8 mulss xmm0, dword ptr [rip + 0x1a5faa8]
+28bb50	28c1ef	BC	movss xmm2, dword ptr [rip + 0x1b71ec5]	mul	28c21c mulss xmm2, xmm6
+28bb50	28c20b	B8	movss xmm0, dword ptr [rip + 0x1b71ea5]	mul	28c213 mulss xmm0, xmm7
+28bb50	28c25f	B8	movss xmm0, dword ptr [rip + 0x1b71e51]	mul	28c27b mulss xmm0, xmm7
+28bb50	28c273	BC	movss xmm2, dword ptr [rip + 0x1b71e41]	mul	28c27f mulss xmm2, xmm6
+28bb50	28c2d7	BC	movss xmm0, dword ptr [rip + 0x1b71ddd]	mul	28c2df mulss xmm0, xmm9
+28c870	28c881	B4	div dword ptr [rip + 0x1b7182d]	divisor(mem)	
+28c870	28c8b1	BC	movss xmm1, dword ptr [rip + 0x1b71803]	mul	28c8bc mulss xmm1, dword ptr [rip + 0x66b8bc]
+28cd80	28cdff	B4	div dword ptr [rip + 0x1b712af]	divisor(mem)	
+28cd80	28ce50	BC	movss xmm0, dword ptr [rip + 0x1b71264]	mul	28ce58 mulss xmm0, dword ptr [rip + 0x6886a8]
+28ce90	28cf0e	B4	div dword ptr [rip + 0x1b711a0]	divisor(mem)	
+28d460	28d53a	BC	movss xmm12, dword ptr [rip + 0x1b70b79]	mul	28d546 mulss xmm12, dword ptr [rip + 0x66ac31]
+2905b0	291408	B8	movss xmm0, dword ptr [rip + 0x1b6cca8]	mul	291410 mulss xmm0, dword ptr [rip + 0x670570]
+2905b0	2918a8	BC	movss xmm0, dword ptr [rip + 0x1b6c80c]	mul	2918b0 mulss xmm0, dword ptr [rip + 0x684770]
+2905b0	2918c8	BC	movss xmm1, dword ptr [rip + 0x1b6c7ec]	mul	2918d0 mulss xmm1, dword ptr [rip + 0x684754]
+2905b0	291aff	BC	movss xmm0, dword ptr [rip + 0x1b6c5b5]	mul	291b07 mulss xmm0, dword ptr [rip + 0x68451d]
+299d10	299f43	B4	imul ecx, dword ptr [rip + 0x1b64167], 0x7530	mul(mem)	
+299fc0	29a003	BC	movss xmm0, dword ptr [rip + 0x1b640b1]	mul	29a00b mulss xmm0, dword ptr [rip + 0x67b9e1]
+2bda90	2bda90	B4	mov edx, dword ptr [rip + 0x1b4061e]	copy:movzx	2bda96 movzx eax, dl
+2bdb20	2bdb20	B4	imul eax, dword ptr [rip + 0x1b4058a], 0x96	mul(mem)	
+2bdb20	2bdb49	B4	imul eax, dword ptr [rip + 0x1b40564], 0x1e	mul(mem)	
+2beac0	2beb42	B4	movsx ecx, word ptr [rip + 0x1b3f56b]	mul	2beb4c imul ecx, eax
+2beac0	2beb78	B4	div dword ptr [rip + 0x1b3f536]	divisor(mem)	
+2beac0	2bebb8	B4	mov edx, dword ptr [rip + 0x1b3f4f6]	mul	2bebc5 imul ecx, edx, 0x96
+2beac0	2bebdf	B4	mov edx, dword ptr [rip + 0x1b3f4cf]	call_before_use	
+2c6180	2c621b	B4	div dword ptr [rip + 0x1b37e93]	divisor(mem)	
+2c6180	2c623d	B4	div dword ptr [rip + 0x1b37e71]	divisor(mem)	
+2c6b50	2c6b92	B4	div dword ptr [rip + 0x1b3751c]	divisor(mem)	
+2c6b50	2c6bb7	B4	div dword ptr [rip + 0x1b374f7]	divisor(mem)	
+2c6be0	2c6c24	B4	div dword ptr [rip + 0x1b3748a]	divisor(mem)	
+2c6be0	2c6c55	B4	div dword ptr [rip + 0x1b37459]	divisor(mem)	
+2c6be0	2c6c9b	B4	div dword ptr [rip + 0x1b37413]	divisor(mem)	
+2c6be0	2c6ce1	B4	div dword ptr [rip + 0x1b373cd]	divisor(mem)	
+2c6be0	2c6d4f	B4	div dword ptr [rip + 0x1b3735f]	divisor(mem)	
+2c6be0	2c6d84	B4	div dword ptr [rip + 0x1b3732a]	divisor(mem)	
+2c6f70	2c7106	B4	div dword ptr [rip + 0x1b36fa8]	divisor(mem)	
+2c6f70	2c7159	B4	div dword ptr [rip + 0x1b36f55]	divisor(mem)	
+2c6f70	2c7200	B4	div dword ptr [rip + 0x1b36eae]	divisor(mem)	
+2c6f70	2c721e	B4	div dword ptr [rip + 0x1b36e90]	divisor(mem)	
+2c6f70	2c7295	B4	div dword ptr [rip + 0x1b36e19]	divisor(mem)	
+2c6f70	2c752f	B4	div dword ptr [rip + 0x1b36b7f]	divisor(mem)	
+2c6f70	2c754b	B4	div dword ptr [rip + 0x1b36b63]	divisor(mem)	
+2c6f70	2c758e	B4	div dword ptr [rip + 0x1b36b20]	divisor(mem)	
+2e28e0	2e2ce6	BC	mulss xmm6, dword ptr [rip + 0x1b1b3ce]	mul(mem)	
+2e45e0	2e48d4	B8	movss xmm0, dword ptr [rip + 0x1b197dc]	mul	2e48dc mulss xmm0, xmm6
+2e85e0	2e85f6	BC	divss xmm2, dword ptr [rip + 0x1b15abe]	divss(mem)	
+2e8b80	2e8b96	BC	divss xmm2, dword ptr [rip + 0x1b1551e]	divss(mem)	
+2eb4a0	2ec3a4	BC	divss xmm2, dword ptr [rip + 0x1b11d10]	divss(mem)	
+2eb4a0	2ed336	BC	divss xmm2, dword ptr [rip + 0x1b10d7e]	divss(mem)	
+2f18d0	2f18dc	B4	add eax, dword ptr [rip + 0x1b0c7d2]	add(mem)	
+2f1a90	2f1b10	B4	mov ecx, dword ptr [rip + 0x1b0c59e]	overwritten	
+2f1a90	2f1bd5	B4	mov ecx, dword ptr [rip + 0x1b0c4d9]	overwritten	
+2f1a90	2f1c27	B4	mov ecx, dword ptr [rip + 0x1b0c487]	overwritten	
+2f1c50	2f1c95	B4	mov ecx, dword ptr [rip + 0x1b0c419]	overwritten	
+2f4020	2f408d	B4	mov edx, dword ptr [rip + 0x1b0a021]	overwritten	
+2f4020	2f40a9	B4	movzx ecx, word ptr [rip + 0x1b0a004]	overwritten	
+2f8410	2f86a8	B4	imul eax, dword ptr [rip + 0x1b05a02], 0x2328	mul(mem)	
+2f8410	2f8709	B4	imul ecx, dword ptr [rip + 0x1b059a4], 0x5a	mul(mem)	
+2f8410	2f8718	B4	imul ecx, dword ptr [rip + 0x1b05995], 0x1e	mul(mem)	
+2f8410	2f8863	B4	imul ecx, dword ptr [rip + 0x1b0584a], 0x1e	mul(mem)	
+2fa1a0	2fa1c1	B4	imul ecx, dword ptr [rip + 0x1b03ee9], 0x384	mul(mem)	
+2fa1a0	2fa1cf	B4	imul eax, dword ptr [rip + 0x1b03edb], 0x4b0	mul(mem)	
+2fa1a0	2fa1e5	B4	imul ebx, dword ptr [rip + 0x1b03ec5], 0x5dc	mul(mem)	
+300530	30080a	B8	movss xmm0, dword ptr [rip + 0x1afd8a6]	mul	300814 mulss xmm0, dword ptr [rip + 0x5f8564]
+301140	3012bf	B8	movss xmm0, dword ptr [rip + 0x1afcdf1]	mul	3012c7 mulss xmm0, dword ptr [rip + 0x19ea9dd]
+303f00	303f98	B8	movss xmm1, dword ptr [rip + 0x1afa118]	mul	303fa3 mulss xmm1, dword ptr [rip + 0x5f41d5]
+305080	2fe80b	B8	movss xmm0, dword ptr [rip + 0x1aff8a5]	mul	2fe813 mulss xmm0, dword ptr [rip + 0x5fa565]
+307e70	307f58	B8	movss xmm0, dword ptr [rip + 0x1af6158]	mul	307f60 mulss xmm0, dword ptr [rip + 0x5f0e18]
+307e70	307f86	B8	movss xmm0, dword ptr [rip + 0x1af612a]	mul	307f8e mulss xmm0, dword ptr [rip + 0x19e3d16]
+3081e0	308204	B8	movss xmm0, dword ptr [rip + 0x1af5eac]	mul	30820f mulss xmm0, dword ptr [rip + 0x5f0b69]
+30af30	30af50	B8	movss xmm0, dword ptr [rip + 0x1af3160]	mul	30af58 mulss xmm0, dword ptr [rip + 0x5ede20]
+30af30	30af77	B8	movss xmm0, dword ptr [rip + 0x1af3139]	mul	30af84 mulss xmm0, dword ptr [rip + 0x5eddf4]
+317670	317670	B8	movss xmm0, dword ptr [rip + 0x1ae6a40]	mul	317678 mulss xmm0, dword ptr [rip + 0x19d462c]
+3191b0	319206	B8	movss xmm0, dword ptr [rip + 0x1ae4eaa]	mul	319215 mulss xmm0, xmm6
+319600	319664	B8	movss xmm0, dword ptr [rip + 0x1ae4a4c]	mul	31966c mulss xmm0, xmm6
+319600	3196e9	B8	movss xmm0, dword ptr [rip + 0x1ae49c7]	mul	3196fa mulss xmm0, xmm6
+3204e0	3205ad	BC	movss xmm0, dword ptr [rip + 0x1addb07]	mul	3205b5 mulss xmm0, dword ptr [rbx]
+321530	32157f	B8	movss xmm0, dword ptr [rip + 0x1adcb31]	mul	321587 mulss xmm0, dword ptr [rip + 0x5d77f1]
+32aec0	32af28	B4	mov eax, dword ptr [rip + 0x1ad3186]	to_float	32af39 cvtsi2ss xmm1, rax
+32aec0	32b053	B4	mov eax, dword ptr [rip + 0x1ad305b]	to_float	32b067 cvtsi2ss xmm1, rax
+32bb00	32bc4a	B4	mov eax, dword ptr [rip + 0x1ad2464]	to_float	32bc56 cvtsi2ss xmm3, rax
+32beb0	32bfe2	B4	mov eax, dword ptr [rip + 0x1ad20cc]	to_float	32bfe8 cvtsi2ss xmm1, rax
+32c180	32c212	B4	mov eax, dword ptr [rip + 0x1ad1e9c]	to_float	32c227 cvtsi2ss xmm0, rax
+32c180	32c279	B4	mov eax, dword ptr [rip + 0x1ad1e35]	to_float	32c28e cvtsi2ss xmm0, rax
+32c2b0	32c334	B4	mov eax, dword ptr [rip + 0x1ad1d7a]	to_float	32c349 cvtsi2ss xmm0, rax
+32c2b0	32c3a2	B4	mov eax, dword ptr [rip + 0x1ad1d0c]	to_float	32c3b7 cvtsi2ss xmm0, rax
+32c650	32c6da	B4	mov eax, dword ptr [rip + 0x1ad19d4]	?	
+32c650	32c7a5	B4	mov eax, dword ptr [rip + 0x1ad1909]	to_float	32c7b6 cvtsi2ss xmm1, rax
+32c650	32c85e	B4	mov eax, dword ptr [rip + 0x1ad1850]	to_float	32c867 cvtsi2ss xmm0, rax
+32ce40	32cf10	BC	movss xmm1, dword ptr [rip + 0x1ad11a4]	mul	32cf18 mulss xmm1, dword ptr [rip + 0x59904c]
+32d000	32d0ad	B4	mov eax, dword ptr [rip + 0x1ad1001]	to_float	32d0c1 cvtsi2ss xmm2, rax
+32d3d0	32d471	B4	mov eax, dword ptr [rip + 0x1ad0c3d]	to_float	32d482 cvtsi2ss xmm0, rax
+32d3d0	32d54b	B4	mov eax, dword ptr [rip + 0x1ad0b63]	to_float	32d568 cvtsi2ss xmm0, rax
+32d620	32d6b3	B4	mov eax, dword ptr [rip + 0x1ad09fb]	to_float	32d6d0 cvtsi2ss xmm0, rax
+32d620	32d74b	B4	mov eax, dword ptr [rip + 0x1ad0963]	to_float	32d768 cvtsi2ss xmm0, rax
+32d820	32d8e0	B4	mov eax, dword ptr [rip + 0x1ad07ce]	to_float	32d8fd cvtsi2ss xmm0, rax
+32db10	32db16	B4	mov eax, dword ptr [rip + 0x1ad0598]	to_float	32db2d cvtsi2ss xmm1, rax
+32db10	32dbac	B4	mov eax, dword ptr [rip + 0x1ad0502]	to_float	32dbb9 cvtsi2ss xmm0, rax
+32dc00	32dd65	B4	mov eax, dword ptr [rip + 0x1ad0349]	to_float	32dd81 cvtsi2ss xmm0, rax
+32dde0	32ddfb	B4	mov eax, dword ptr [rip + 0x1ad02b3]	to_float	32de0f cvtsi2ss xmm1, rax
+32de90	32deb6	B4	mov eax, dword ptr [rip + 0x1ad01f8]	to_float	32dec7 cvtsi2ss xmm1, rax
+3333d0	3333d0	B8	movss xmm0, dword ptr [rip + 0x1acace0]	mul	3333d8 mulss xmm0, dword ptr [rip + 0x5c59a0]
+337a00	337a00	B4	imul ecx, dword ptr [rip + 0x1ac66ad], 0x1e	mul(mem)	
+337a00	337a1a	B4	imul eax, dword ptr [rip + 0x1ac6690], 0xf0	mul(mem)	
+337a50	337b75	B4	imul ecx, dword ptr [rip + 0x1ac6538], 0x1e	mul(mem)	
+337d90	337f2b	B4	imul ecx, dword ptr [rip + 0x1ac6182], 0x1e	mul(mem)	
+337d90	337fd9	B4	imul eax, dword ptr [rip + 0x1ac60d4], 0x1e	mul(mem)	
+337d90	337ff6	B4	movzx eax, word ptr [rip + 0x1ac60b7]	mul	337ffd imul ecx, eax, 0x1e
+337d90	338014	B4	mov r8d, dword ptr [rip + 0x1ac6099]	jmp	
+337d90	338023	B4	mov r8d, dword ptr [rip + 0x1ac608a]	mul	33802c imul ecx, r8d, 0x96
+339630	3399b0	B4	movzx eax, byte ptr [rip + 0x1ac46fd]	mul	3399b7 imul ecx, eax, 0x96
+33d890	33da7d	B8	movss xmm1, dword ptr [rip + 0x1ac0633]	mul	33da85 mulss xmm1, dword ptr [rip + 0x5bb2f3]
+33d890	33daa3	B8	movss xmm0, dword ptr [rip + 0x1ac060d]	mul	33daab mulss xmm0, dword ptr [rip + 0x5bb2cd]
+33dfd0	33e05d	B4	imul ecx, dword ptr [rip + 0x1ac0050], 0x5a	mul(mem)	
+343db0	343ded	B8	mulss xmm0, dword ptr [rip + 0x1aba2c3]	mul(mem)	
+3442d0	344317	B8	mulss xmm0, dword ptr [rip + 0x1ab9d99]	mul(mem)	
+349d00	349d3f	B8	mulss xmm0, dword ptr [rip + 0x1ab4371]	mul(mem)	
+349fa0	349fe6	B8	mulss xmm6, dword ptr [rip + 0x1ab40ca]	mul(mem)	
+351850	358a73	BC	mulss xmm6, dword ptr [rip + 0x1aa5641]	mul(mem)	
+351850	358d1e	B8	movss xmm1, dword ptr [rip + 0x1aa5392]	mul	358d2b mulss xmm1, dword ptr [rip + 0x5a004d]
+351850	359016	BC	divss xmm6, dword ptr [rip + 0x1aa509e]	divss(mem)	
+351850	35af2d	BC	movss xmm0, dword ptr [rip + 0x1aa3187]	mul	35af35 mulss xmm0, dword ptr [rip + 0x5a7fb7]
+366b80	3670a6	B4	mov r8d, dword ptr [rip + 0x1a97007]	mul	3670ad imul ecx, r8d, 0x1e
+36f460	36f4a9	B8	movss xmm2, dword ptr [rip + 0x1a8ec07]	mul	36f4b1 mulss xmm2, dword ptr [rip + 0x5898c7]
+37a450	37a499	BC	movss xmm0, dword ptr [rip + 0x1a83c1b]	fadd	37a4a1 addss xmm0, dword ptr [rax + rdx + 0x2c]
+37d1f0	37d2a3	BC	mulss xmm0, dword ptr [rip + 0x1a80e11]	mul(mem)	
+385ca0	385ce3	B4	imul ecx, dword ptr [rip + 0x1a783ca], 0x1e	mul(mem)	
+385ca0	385d7d	B4	imul ecx, dword ptr [rip + 0x1a78330], 0x1e	mul(mem)	
+386860	386999	B4	mov r8d, dword ptr [rip + 0x1a77714]	mul	3869a5 imul ecx, r8d, 0x1e
+386c70	386e7a	B4	imul eax, dword ptr [rip + 0x1a77233]	mul(mem)	
+387020	387078	B4	imul eax, dword ptr [rip + 0x1a77035]	mul(mem)	
+3876d0	387718	B4	imul eax, dword ptr [rip + 0x1a76995]	mul(mem)	
+387730	38797f	B4	mov eax, dword ptr [rip + 0x1a7672f]	mul	38798f imul eax, ecx
+38ff20	390075	B4	imul eax, dword ptr [rip + 0x1a6e038]	mul(mem)	
+3939b0	393cfc	B4	mov eax, dword ptr [rip + 0x1a6a3b2]	lea	393d02 lea ebx, [rax + rax*4]
+3a8390	3a83ae	B4	div dword ptr [rip + 0x1a55d00]	divisor(mem)	
+3aef90	3af05a	B4	mov r9d, dword ptr [rip + 0x1a4f053]	copy:mov	3af061 mov eax, r9d
+3aef90	3af0bc	BC	mulss xmm2, dword ptr [rip + 0x1a4eff8]	mul(mem)	
+3aef90	3af108	B4	mov r9d, dword ptr [rip + 0x1a4efa5]	mul	3af117 imul ecx, r9d
+3aef90	3af147	BC	movss xmm1, dword ptr [rip + 0x1a4ef6d]	other:cvtps2pd	3af166 cvtps2pd xmm1, xmm1
+3aef90	3af196	BC	movss xmm2, dword ptr [rip + 0x1a4ef1e]	other:cvtps2pd	3af1bd cvtps2pd xmm1, xmm2
+3b8670	3b8d23	B4	movzx r8d, word ptr [rip + 0x1a45389]	overwritten	
+3b99d0	3b9e88	B4	movzx eax, word ptr [rip + 0x1a44225]	mul	3b9e92 imul ecx, eax
+3ba1f0	3ba221	B4	movzx eax, byte ptr [rip + 0x1a43e8c]	mul	3ba236 imul ecx, eax
+3da050	3da100	BC	mulss xmm1, dword ptr [rip + 0x1a23fb4]	mul(mem)	
+3dcfb0	3dd098	BC	mulss xmm0, dword ptr [rip + 0x1a2101c]	mul(mem)	
+3dfe70	3dfedb	B4	mov ecx, dword ptr [rip + 0x1a1e1d3]	mul	3dfee1 imul ecx, edi
+3dff20	3dff89	B4	mov eax, dword ptr [rip + 0x1a1e125]	mul	3dff8f imul eax, edi
+3e2810	3e2860	B8	movss xmm6, dword ptr [rip + 0x1a1b850]	fdivisor	3e2868 divss xmm7, xmm6
+3e28f0	3e293c	B8	movss xmm6, dword ptr [rip + 0x1a1b774]	fdivisor	3e2944 divss xmm7, xmm6
+3e2d20	3e2e30	B4	movzx ecx, byte ptr [rip + 0x1a1b27d]	copy:movzx	3e2e3d movzx eax, cl
+3e2d20	3e2e4f	BC	movss xmm0, dword ptr [rip + 0x1a1b265]	mul	3e2e57 mulss xmm0, xmm6
+3e2f30	3e2f78	BC	movss xmm0, dword ptr [rip + 0x1a1b13c]	jmp	
+3e2fd0	3e303d	BC	movss xmm0, dword ptr [rip + 0x1a1b077]	jmp	
+3e30a0	3e30df	B8	movss xmm1, dword ptr [rip + 0x1a1afd1]	mul	3e30ea mulss xmm1, dword ptr [rdi + 0x18]
+3e3140	3e317f	B8	movss xmm1, dword ptr [rip + 0x1a1af31]	mul	3e318a mulss xmm1, dword ptr [rdi + 0x18]
+3e3200	3e32c2	BC	movss xmm0, dword ptr [rip + 0x1a1adf2]	jmp	
+3e3340	3e336d	B8	movss xmm1, dword ptr [rip + 0x1a1ad43]	mul	3e3378 mulss xmm1, dword ptr [rdi + 0x18]
+3e3460	3e34b3	BC	movss xmm6, dword ptr [rip + 0x1a1ac01]	mul	3e34bb mulss xmm6, dword ptr [rip + 0x532045]
+3e3460	3e34db	B4	movzx ebx, byte ptr [rip + 0x1a1abd2]	shift	3e34e5 shl bl, 3
+3e3460	3e350c	BC	movss xmm6, dword ptr [rip + 0x1a1aba8]	mul	3e3514 mulss xmm6, dword ptr [rip + 0x531fec]
+3e3460	3e3532	B4	movzx ebx, byte ptr [rip + 0x1a1ab7b]	shift	3e353c shl bl, 3
+3e3590	3e35e3	BC	movss xmm6, dword ptr [rip + 0x1a1aad1]	mul	3e35eb mulss xmm6, dword ptr [rip + 0x531f15]
+3e3590	3e360b	B4	movzx ebx, byte ptr [rip + 0x1a1aaa2]	shift	3e3615 shl bl, 3
+3e3590	3e363c	BC	movss xmm6, dword ptr [rip + 0x1a1aa78]	mul	3e3644 mulss xmm6, dword ptr [rip + 0x531ebc]
+3e3590	3e3662	B4	movzx ebx, byte ptr [rip + 0x1a1aa4b]	shift	3e366c shl bl, 3
+3e43d0	3e4484	B4	mov eax, dword ptr [rip + 0x1a19c2a]	lea	3e448d lea ecx, [rax*8]
+3e43d0	3e4505	B4	movzx eax, byte ptr [rip + 0x1a19ba8]	mul	3e450c imul ecx, eax, 0xf8
+3e43d0	3e4558	B4	mov eax, dword ptr [rip + 0x1a19b56]	lea	3e4561 lea ecx, [rax*8]
+3e43d0	3e45d9	B4	movzx eax, byte ptr [rip + 0x1a19ad4]	shift	3e45e7 shl al, 7
+3e5d60	3e5d91	B4	imul r10d, dword ptr [rip + 0x1a1831b]	mul(mem)	
+3e94d0	3e9505	BC	divss xmm0, dword ptr [rip + 0x1a14baf]	divss(mem)	
+3e9690	3e96c7	BC	divss xmm0, dword ptr [rip + 0x1a149ed]	divss(mem)	
+3ebf60	3ebfb3	BC	movss xmm2, dword ptr [rip + 0x1a12101]	mul	3ebfc6 mulss xmm2, dword ptr [rax + 0x24]
+3ec040	3ec12e	BC	movss xmm2, dword ptr [rip + 0x1a11f86]	mul	3ec139 mulss xmm2, dword ptr [rax + 0x28]
+3ec040	3ec152	BC	movss xmm6, dword ptr [rip + 0x1a11f62]	mul	3ec15a mulss xmm6, dword ptr [rax + 0x24]
+3ee420	3ee6b2	B4	imul ecx, dword ptr [rip + 0x1a0f9f8], 0x2580	mul(mem)	
+3ee420	3ee723	B4	imul ecx, dword ptr [rip + 0x1a0f987], 0x2580	mul(mem)	
+3ee420	3ee776	B4	imul ecx, dword ptr [rip + 0x1a0f934], 0x2580	mul(mem)	
+3eebd0	3eebd0	B4	imul r8d, dword ptr [rip + 0x1a0f4d9], 0x2580	mul(mem)	
+3eebd0	3eec40	B4	imul ecx, dword ptr [rip + 0x1a0f46a], 0x2580	mul(mem)	
+3eebd0	3eec9c	B4	imul ecx, dword ptr [rip + 0x1a0f40e], 0x2580	mul(mem)	
+3eebd0	3eecf8	B4	imul ecx, dword ptr [rip + 0x1a0f3b2], 0x2580	mul(mem)	
+3f1e90	3f1f4a	BC	mulss xmm1, dword ptr [rip + 0x1a0c16a]	mul(mem)	
+3f1e90	3f1f77	BC	mulss xmm0, dword ptr [rip + 0x1a0c13d]	mul(mem)	
+3f1e90	3f1f9f	BC	movss xmm0, dword ptr [rip + 0x1a0c115]	mul	3f1faf mulss xmm0, dword ptr [rip + 0x510f35]
+3f1e90	3f1ffe	BC	movss xmm0, dword ptr [rip + 0x1a0c0b6]	mul	3f202d mulss xmm0, xmm4
+3f1e90	3f204c	BC	movss xmm0, dword ptr [rip + 0x1a0c068]	mul	3f2058 mulss xmm0, xmm4
+3f1e90	3f2078	BC	movss xmm0, dword ptr [rip + 0x1a0c03c]	mul	3f2080 mulss xmm0, xmm4
+3f1e90	3f20a0	BC	movss xmm0, dword ptr [rip + 0x1a0c014]	mul	3f20a8 mulss xmm0, xmm4
+3f1e90	3f20c7	B8	movss xmm0, dword ptr [rip + 0x1a0bfe9]	mul	3f20cf mulss xmm0, dword ptr [rip + 0x52260d]
+3f1e90	3f20d7	BC	movss xmm2, dword ptr [rip + 0x1a0bfdd]	mul	3f20df mulss xmm2, dword ptr [rip + 0x50e1c9]
+3f1e90	3f210f	BC	movss xmm0, dword ptr [rip + 0x1a0bfa5]	mul	3f2127 mulss xmm0, xmm3
+3f1e90	3f2143	BC	movss xmm0, dword ptr [rip + 0x1a0bf71]	mul	3f2153 mulss xmm0, xmm3
+3f1e90	3f2223	BC	movss xmm1, dword ptr [rip + 0x1a0be91]	copy:movaps	3f2236 movaps xmm2, xmm1
+3f1e90	3f22ce	BC	movss xmm0, dword ptr [rip + 0x1a0bde6]	mul	3f22fd mulss xmm0, xmm4
+3f1e90	3f231c	BC	movss xmm0, dword ptr [rip + 0x1a0bd98]	mul	3f2328 mulss xmm0, xmm4
+3f1e90	3f2348	BC	movss xmm0, dword ptr [rip + 0x1a0bd6c]	mul	3f2350 mulss xmm0, xmm4
+3f1e90	3f2370	BC	movss xmm0, dword ptr [rip + 0x1a0bd44]	mul	3f2378 mulss xmm0, xmm4
+3f30d0	3f3120	BC	movss xmm0, dword ptr [rip + 0x1a0af94]	mul	3f3130 mulss xmm0, dword ptr [rip + 0x5223d0]
+3f30d0	3f315b	BC	movss xmm0, dword ptr [rip + 0x1a0af59]	mul	3f3163 mulss xmm0, dword ptr [rip + 0x18f8a05]
+3f5cb0	3f5d19	BC	movss xmm0, dword ptr [rip + 0x1a0839b]	mul	3f5d34 mulss xmm0, xmm2
+3f5cb0	3f5d47	BC	movss xmm0, dword ptr [rip + 0x1a0836d]	mul	3f5d4f mulss xmm0, dword ptr [rip + 0x50a565]
+3f5cb0	3f5d77	BC	movss xmm0, dword ptr [rip + 0x1a0833d]	mul	3f5d7f mulss xmm0, xmm2
+3f5cb0	3f5e2d	BC	movss xmm0, dword ptr [rip + 0x1a08287]	mul	3f5e35 mulss xmm0, xmm3
+3f5cb0	3f5e72	B4	imul eax, dword ptr [rip + 0x1a0823b], 0xf	mul(mem)	
+3f5cb0	3f5e8e	BC	movss xmm0, dword ptr [rip + 0x1a08226]	mul	3f5e96 mulss xmm0, dword ptr [rip + 0x50a41e]
+3f5cb0	3f5eb5	B4	imul ecx, dword ptr [rip + 0x1a081f8], 0xf	mul(mem)	
+3f5cb0	3f5fa6	BC	movss xmm0, dword ptr [rip + 0x1a0810e]	mul	3f5fae mulss xmm0, dword ptr [rip + 0x4cffb6]
+3f5cb0	3f5fce	BC	movss xmm1, dword ptr [rip + 0x1a080e6]	mul	3f5fd6 mulss xmm1, dword ptr [rip + 0x4cff8e]
+3f5cb0	3f6024	B4	imul eax, dword ptr [rip + 0x1a08089], 0xf	mul(mem)	
+3f5cb0	3f6048	B8	movss xmm0, dword ptr [rip + 0x1a08068]	mul	3f6054 mulss xmm0, dword ptr [rip + 0x51f99c]
+3f5cb0	3f607a	B8	movss xmm0, dword ptr [rip + 0x1a08036]	mul	3f6082 mulss xmm0, dword ptr [rip + 0x50b8fe]
+3f62d0	3f6313	B4	imul r8d, dword ptr [rip + 0x1a07d99], 0xf	mul(mem)	
+3f6bb0	3f6c80	BC	movss xmm0, dword ptr [rip + 0x1a07434]	mul	3f6c88 mulss xmm0, xmm12
+3f6bb0	3f6d61	BC	movss xmm1, dword ptr [rip + 0x1a07353]	mul	3f6d71 mulss xmm1, xmm10
+3f6bb0	3f6d7c	BC	movss xmm0, dword ptr [rip + 0x1a07338]	mul	3f6d84 mulss xmm0, xmm10
+3f6bb0	3f6d9f	BC	movss xmm0, dword ptr [rip + 0x1a07315]	mul	3f6da7 mulss xmm0, xmm11
+3f6bb0	3f6e00	BC	movss xmm0, dword ptr [rip + 0x1a072b4]	mul	3f6e13 mulss xmm0, xmm14
+3f9f40	3f9f64	B4	imul edx, dword ptr [rip + 0x1a04149], 0xf	mul(mem)	
+3faa10	3faa23	BC	movss xmm2, dword ptr [rip + 0x1a03691]	copy:movaps	3faa2e movaps xmm0, xmm2
+3facf0	3fae56	B4	imul eax, dword ptr [rip + 0x1a03257], 0x1e	mul(mem)	
+3faf10	3fb2bd	B4	div dword ptr [rip + 0x1a02df1]	divisor(mem)	
+3faf10	3fb2ed	B4	imul ecx, dword ptr [rip + 0x1a02dc0], 0x5a	mul(mem)	
+3fc3f0	3fc439	B4	imul ecx, dword ptr [rip + 0x1a01c74], 0x3c	mul(mem)	
+3fc510	3fc550	BC	movss xmm0, dword ptr [rip + 0x1a01b64]	mul	3fc55c mulss xmm0, dword ptr [rip + 0x915ae4]
+3fc510	3fc5a7	BC	movss xmm0, dword ptr [rip + 0x1a01b0d]	mul	3fc5b4 mulss xmm0, dword ptr [rip + 0x915a84]
+3fc510	3fc6d9	BC	mulss xmm1, dword ptr [rip + 0x1a019db]	mul(mem)	
+3fc510	3fc75e	B4	mov eax, dword ptr [rip + 0x1a01950]	lea	3fc76b lea ecx, [rax*4]
+3fc510	3fc793	BC	movss xmm0, dword ptr [rip + 0x1a01921]	mul	3fc79b mulss xmm0, dword ptr [rip + 0x4c97c9]
+3fc510	3fc879	BC	movss xmm0, dword ptr [rip + 0x1a0183b]	mul	3fc881 mulss xmm0, dword ptr [rip + 0x503a33]
+3fc510	3fc89d	BC	movss xmm0, dword ptr [rip + 0x1a01817]	mul	3fc8a5 mulss xmm0, xmm3
+4079a0	407a77	B4	div dword ptr [rip + 0x19f6637]	divisor(mem)	
+40aa20	40aa32	BC	movss xmm0, dword ptr [rip + 0x19f3682]	mul	40aa3a mulss xmm0, dword ptr [rcx + 0x24]
+40acf0	40adca	BC	movss xmm0, dword ptr [rip + 0x19f32ea]	mul	40add2 mulss xmm0, dword ptr [rdi + 0x34]
+40acf0	40ae57	BC	movss xmm0, dword ptr [rip + 0x19f325d]	mul	40ae5f mulss xmm0, dword ptr [rdi + 0x24]
+40b180	40b1cc	BC	mulss xmm6, dword ptr [rip + 0x19f2ee8]	mul(mem)	
+418750	4187eb	BC	subss xmm1, dword ptr [rip + 0x19e58c9]	subss(mem)	
+418880	419195	BC	movss xmm0, dword ptr [rip + 0x19e4f1f]	mul	41919d mulss xmm0, dword ptr [r12 + 0x9c]
+418880	419232	BC	subss xmm0, dword ptr [rip + 0x19e4e82]	subss(mem)	
+418880	419299	BC	subss xmm1, dword ptr [rip + 0x19e4e1b]	subss(mem)	
+418880	4192de	BC	subss xmm0, dword ptr [rip + 0x19e4dd6]	subss(mem)	
+418880	419351	BC	movss xmm7, dword ptr [rip + 0x19e4d63]	mul	419359 mulss xmm7, xmm0
+418880	41978c	BC	subss xmm0, dword ptr [rip + 0x19e4928]	subss(mem)	
+418880	41a3bb	BC	subss xmm0, dword ptr [rip + 0x19e3cf9]	subss(mem)	
+41bee0	41c1bc	BC	subss xmm1, dword ptr [rip + 0x19e1ef8]	subss(mem)	
+41c7c0	41c7c9	BC	mulss xmm2, dword ptr [rip + 0x19e18eb]	mul(mem)	
+41cb90	41cc36	BC	movss xmm0, dword ptr [rip + 0x19e147e]	mul	41cc3e mulss xmm0, dword ptr [rip + 0x4dc13a]
+41d820	41d9ac	BC	movss xmm6, dword ptr [rip + 0x19e0708]	fadd	41d9b4 addss xmm6, xmm8
+422420	422457	B4	movzx ecx, byte ptr [rip + 0x19dbc56]	store	42245e mov byte ptr [rbx + 0x40e], cl
+422420	42247a	B4	imul ecx, dword ptr [rip + 0x19dbc33], 0xb	mul(mem)	
+422500	422553	B4	mov edx, dword ptr [rip + 0x19dbb5b]	lea	422559 lea ecx, [rdx + rdx*2]
+4225a0	4225e4	B4	movsx eax, byte ptr [rip + 0x19dbac9]	mul	4225f5 imul ecx, eax
+424080	424146	B4	imul eax, dword ptr [rip + 0x19d9f67], 0x1e	mul(mem)	
+4256e0	425827	BC	movss xmm0, dword ptr [rip + 0x19d888d]	fcmp	42582f comiss xmm0, xmm6
+4256e0	42587c	B8	mulss xmm2, dword ptr [rip + 0x19d8834]	mul(mem)	
+4256e0	425bc8	B4	imul ecx, dword ptr [rip + 0x19d84e5], 0x5a	mul(mem)	
+4256e0	425bed	B4	movsx eax, byte ptr [rip + 0x19d84c0]	mul	425bf4 imul ecx, eax, 0x1e
+4256e0	425bfd	B4	mov eax, dword ptr [rip + 0x19d84b1]	lea	425c03 lea ecx, [rax + rax*2]
+4256e0	425c25	B4	imul ecx, dword ptr [rip + 0x19d8488], 0x5a	mul(mem)	
+4256e0	425c42	B4	imul ecx, dword ptr [rip + 0x19d846b], 0x1e	mul(mem)	
+42ee90	42eec6	BC	subss xmm0, dword ptr [rip + 0x19cf1ee]	subss(mem)	
+42ee90	42ef09	BC	subss xmm0, dword ptr [rip + 0x19cf1ab]	subss(mem)	
+42ee90	42ef52	BC	subss xmm0, dword ptr [rip + 0x19cf162]	subss(mem)	
+42f030	42f0e6	BC	movss xmm1, dword ptr [rip + 0x19cefce]	copy:movaps	42f0f5 movaps xmm0, xmm1
+42f030	42f0ee	B4	imul eax, dword ptr [rip + 0x19cefbf], 0x1e	mul(mem)	
+442310	442341	BC	movss xmm2, dword ptr [rip + 0x19bbd73]	mul	442350 mulss xmm2, xmm6
+4428f0	442c62	BC	movss xmm1, dword ptr [rip + 0x19bb452]	call_before_use	
+45c450	45c81c	B4	movzx eax, word ptr [rip + 0x19a1891]	mul	45c82a imul ecx, eax
+45c450	45c861	B4	movzx eax, word ptr [rip + 0x19a184c]	mul	45c870 imul r8d, eax
+45cdc0	45d18c	B4	movzx eax, word ptr [rip + 0x19a0f21]	mul	45d19a imul ecx, eax
+45cdc0	45d1d1	B4	movzx eax, word ptr [rip + 0x19a0edc]	mul	45d1e0 imul r8d, eax
+45d7d0	45db9c	B4	movzx eax, word ptr [rip + 0x19a0511]	mul	45dbaa imul ecx, eax
+45d7d0	45dbe1	B4	movzx eax, word ptr [rip + 0x19a04cc]	mul	45dbf0 imul r8d, eax
+45e3c0	45e790	B4	movzx eax, word ptr [rip + 0x199f91d]	mul	45e79e imul ecx, eax
+45e3c0	45e7cc	B4	movzx eax, word ptr [rip + 0x199f8e1]	mul	45e7da imul edx, eax
+45f140	45f510	B4	movzx eax, word ptr [rip + 0x199eb9d]	mul	45f51e imul ecx, eax
+45f140	45f54c	B4	movzx eax, word ptr [rip + 0x199eb61]	mul	45f55a imul edx, eax
+46ab10	46abe6	B4	imul ecx, dword ptr [rip + 0x19934c4], 0x1c2	mul(mem)	
+4700e0	470109	BC	movss xmm0, dword ptr [rip + 0x198dfab]	mul	470114 mulss xmm0, dword ptr [rip + 0x8b247c]
+4700e0	47013e	BC	movss xmm0, dword ptr [rip + 0x198df76]	mul	470146 mulss xmm0, dword ptr [rip + 0x455e1e]
+470230	470254	B4	imul edx, dword ptr [rip + 0x198de59], 0x1e	mul(mem)	
+470230	470314	B4	mov ecx, dword ptr [rip + 0x198dd9a]	lea	47031e lea eax, [rcx + rcx*2]
+470230	47039f	B4	imul ecx, dword ptr [rip + 0x198dd0e], 0x15	mul(mem)	
+470780	4707c3	BC	movss xmm0, dword ptr [rip + 0x198d8f1]	mul	4707cb mulss xmm0, dword ptr [rip + 0x8b1dc9]
+470780	470815	B4	mov eax, dword ptr [rip + 0x198d899]	lea	47081b lea ecx, [rax + rax*2]
+470780	470859	B4	mov eax, dword ptr [rip + 0x198d855]	lea	47085f lea ecx, [rax + rax*2]
+470780	470898	BC	movss xmm0, dword ptr [rip + 0x198d81c]	mul	4708a0 mulss xmm0, dword ptr [rip + 0x482840]
+470780	470906	B4	mov eax, dword ptr [rip + 0x198d7a8]	lea	47090c lea ecx, [rax + rax*4]
+470780	4709c5	BC	movss xmm0, dword ptr [rip + 0x198d6ef]	mul	4709cd mulss xmm0, dword ptr [rip + 0x8b1bc7]
+470780	470a17	B4	mov eax, dword ptr [rip + 0x198d697]	lea	470a1d lea ecx, [rax + rax*2]
+470780	470a5b	B4	mov eax, dword ptr [rip + 0x198d653]	lea	470a61 lea ecx, [rax + rax*2]
+470aa0	470ab3	BC	movss xmm0, dword ptr [rip + 0x198d601]	mul	470abb mulss xmm0, dword ptr [rip + 0x8b1ad5]
+470b70	470ba3	BC	movss xmm0, dword ptr [rip + 0x198d511]	mul	470bab mulss xmm0, dword ptr [rip + 0x482549]
+470b70	470bd1	B4	imul eax, dword ptr [rip + 0x198d4dc], 0x15	mul(mem)	
+470b70	470ccf	B4	mov ecx, dword ptr [rip + 0x198d3df]	lea	470cd9 lea eax, [rcx + rcx*2]
+470b70	470d56	B4	imul ecx, dword ptr [rip + 0x198d357], 0x15	mul(mem)	
+470b70	470d99	BC	movss xmm0, dword ptr [rip + 0x198d31b]	mul	470da1 mulss xmm0, dword ptr [rip + 0x482353]
+470eb0	470f51	BC	movss xmm0, dword ptr [rip + 0x198d163]	mul	470f59 mulss xmm0, dword ptr [rip + 0x8b1637]
+470eb0	470f8e	BC	movss xmm0, dword ptr [rip + 0x198d126]	mul	470f96 mulss xmm0, dword ptr [rip + 0x454fce]
+4713a0	4713bd	BC	movss xmm0, dword ptr [rip + 0x198ccf7]	mul	4713c5 mulss xmm0, dword ptr [rip + 0x4a413b]
+4713a0	4714d5	BC	movss xmm0, dword ptr [rip + 0x198cbdf]	mul	4714dd mulss xmm0, dword ptr [rip + 0x4a4023]
+4716a0	4716c7	BC	movss xmm0, dword ptr [rip + 0x198c9ed]	mul	4716cf mulss xmm0, dword ptr [rip + 0x4a3e31]
+471b60	471b7e	BC	movss xmm0, dword ptr [rip + 0x198c536]	mul	471b86 mulss xmm0, dword ptr [rip + 0x4a397a]
+471b60	471d63	BC	movss xmm0, dword ptr [rip + 0x198c351]	mul	471d6b mulss xmm0, dword ptr [rip + 0x4a3795]
+471b60	471da2	BC	movss xmm0, dword ptr [rip + 0x198c312]	mul	471daa mulss xmm0, dword ptr [rip + 0x4a3756]
+472970	47298d	BC	movss xmm0, dword ptr [rip + 0x198b727]	mul	472995 mulss xmm0, dword ptr [rip + 0x4a2b6b]
+472970	472b00	B4	sub eax, dword ptr [rip + 0x198b5ae]	sub(mem)	
+472970	472b37	B4	sub eax, dword ptr [rip + 0x198b577]	sub(mem)	
+472970	472b6e	B4	sub eax, dword ptr [rip + 0x198b540]	sub(mem)	
+472970	472bb9	BC	movss xmm0, dword ptr [rip + 0x198b4fb]	mul	472bc1 mulss xmm0, dword ptr [rip + 0x4a293f]
+472970	472bfe	BC	movss xmm0, dword ptr [rip + 0x198b4b6]	mul	472c06 mulss xmm0, dword ptr [rip + 0x4a28fa]
+472970	472c75	B4	movzx ecx, byte ptr [rip + 0x198b438]	mul	472c7f imul edx, ecx
+4742a0	4742fe	B8	movss xmm1, dword ptr [rip + 0x1989db2]	mul	474306 mulss xmm1, dword ptr [rip + 0x484a72]
+47be20	47be90	BC	movss xmm1, dword ptr [rip + 0x1982224]	store	47be98 movss dword ptr [rsp + 0x24], xmm1
+5121a0	51221b	BC	mulss xmm1, dword ptr [rip + 0x18ebe99]	mul(mem)	
+5121a0	512234	BC	movss xmm0, dword ptr [rip + 0x18ebe80]	mul	51223e mulss xmm0, dword ptr [rbx + 0x24]
+513150	513183	BC	movss xmm0, dword ptr [rip + 0x18eaf31]	jmp	
+513150	513199	BC	mulss xmm0, dword ptr [rip + 0x18eaf1b]	mul(mem)	
+5131c0	51325e	B8	mulss xmm0, dword ptr [rip + 0x18eae52]	mul(mem)	
+5131c0	514575	BC	mulss xmm0, dword ptr [rip + 0x18e9b3f]	mul(mem)	
+5131c0	51464a	BC	movss xmm0, dword ptr [rip + 0x18e9a6a]	jmp	
+5131c0	51465b	BC	mulss xmm0, dword ptr [rip + 0x18e9a59]	mul(mem)	
+5131c0	514694	B8	mulss xmm0, dword ptr [rip + 0x18e9a1c]	mul(mem)	
+515660	515676	BC	movss xmm0, dword ptr [rip + 0x18e8a3e]	mul	5156c1 mulss xmm0, dword ptr [rip + 0x3ffe3f]
+515660	515a03	BC	movss xmm0, dword ptr [rip + 0x18e86b1]	mul	515a0b mulss xmm0, dword ptr [rcx + 0x2c]
+517650	51769c	BC	movss xmm0, dword ptr [rip + 0x18e6a18]	mul	5176a4 mulss xmm0, dword ptr [rip + 0x3fde5c]
+517650	517d09	BC	movss xmm0, dword ptr [rip + 0x18e63ab]	mul	517d11 mulss xmm0, dword ptr [rcx + 0x44]
+517650	517d8c	BC	movss xmm0, dword ptr [rip + 0x18e6328]	mul	517d94 mulss xmm0, dword ptr [rip + 0x3ae1d0]
+517650	517dc5	B4	movzx ecx, byte ptr [rip + 0x18e62e8]	mul	517dd6 imul edx, ecx
+517650	517df2	BC	movss xmm0, dword ptr [rip + 0x18e62c2]	mul	517dfa mulss xmm0, dword ptr [rbx + 0x30]
+517650	517e0b	BC	movss xmm0, dword ptr [rip + 0x18e62a9]	mul	517e13 mulss xmm0, dword ptr [rip + 0x3db2dd]
+517650	517e98	BC	movss xmm1, dword ptr [rip + 0x18e621c]	mul	517ea5 mulss xmm1, dword ptr [rbx + 0x30]
+517650	517eb5	BC	movss xmm0, dword ptr [rip + 0x18e61ff]	mul	517ebd mulss xmm0, dword ptr [rip + 0x3ae0a7]
+517650	517f38	B4	movzx ecx, byte ptr [rip + 0x18e6175]	mul	517f44 imul edx, ecx
+517650	517f4c	BC	movss xmm1, dword ptr [rip + 0x18e6168]	mul	517f54 mulss xmm1, dword ptr [rip + 0x3db1ac]
+518820	51888d	B4	movzx ecx, byte ptr [rip + 0x18e5820]	mul	518897 imul edx, ecx
+5188c0	518957	BC	movss xmm1, dword ptr [rip + 0x18e575d]	mul	51895f mulss xmm1, dword ptr [rcx + 0x1c]
+5188c0	518972	BC	movss xmm0, dword ptr [rip + 0x18e5742]	mul	51897a mulss xmm0, dword ptr [rcx + 0x20]
+518f50	519015	BC	movss xmm0, dword ptr [rip + 0x18e509f]	mul	51901d mulss xmm0, dword ptr [rbx - 8]
+519b60	519c22	BC	movss xmm0, dword ptr [rip + 0x18e4492]	mul	519c2a mulss xmm0, dword ptr [rip + 0x808ffe]
+519b60	519d33	B4	mov eax, dword ptr [rip + 0x18e437b]	lea	519d39 lea ecx, [rax + rax*4]
+519b60	519d86	B4	mov eax, dword ptr [rip + 0x18e4328]	lea	519d8c lea ecx, [rax*8]
+519b60	519daa	B4	mov eax, dword ptr [rip + 0x18e4304]	lea	519db0 lea ecx, [rax + rax*4]
+519b60	519dca	B4	mov eax, dword ptr [rip + 0x18e42e4]	lea	519dd0 lea ecx, [rax*8]
+519b60	519dee	B4	mov eax, dword ptr [rip + 0x18e42c0]	lea	519df4 lea ecx, [rax + rax*4]
+519b60	519e28	B4	mov eax, dword ptr [rip + 0x18e4286]	lea	519e2e lea ecx, [rax + rax*4]
+519b60	519ea4	BC	movss xmm0, dword ptr [rip + 0x18e4210]	mul	519eac mulss xmm0, dword ptr [rip + 0x7f75f4]
+519b60	519ecb	BC	movss xmm0, dword ptr [rip + 0x18e41e9]	mul	519ed3 mulss xmm0, dword ptr [rip + 0x7f75cd]
+519b60	519f00	BC	movss xmm0, dword ptr [rip + 0x18e41b4]	mul	519f08 mulss xmm0, dword ptr [rip + 0x3d91d4]
+519b60	519f27	BC	movss xmm0, dword ptr [rip + 0x18e418d]	mul	519f2f mulss xmm0, dword ptr [rip + 0x3d91ad]
+519b60	519f4b	BC	movss xmm0, dword ptr [rip + 0x18e4169]	mul	519f53 mulss xmm0, dword ptr [rip + 0x3e6361]
+519b60	519f80	BC	movss xmm0, dword ptr [rip + 0x18e4134]	mul	519f88 mulss xmm0, dword ptr [rip + 0x3e632c]
+519b60	519fac	BC	movss xmm0, dword ptr [rip + 0x18e4108]	mul	519fb4 mulss xmm0, dword ptr [rip + 0x3e6300]
+519b60	519ffe	BC	movss xmm0, dword ptr [rip + 0x18e40b6]	mul	51a006 mulss xmm0, dword ptr [rip + 0x3e62ae]
+519b60	51a028	BC	movss xmm0, dword ptr [rip + 0x18e408c]	mul	51a030 mulss xmm0, dword ptr [rip + 0x3e6284]
+519b60	51a04d	BC	movss xmm0, dword ptr [rip + 0x18e4067]	mul	51a055 mulss xmm0, dword ptr [rip + 0x3e625f]
+51a780	51a83b	B4	imul eax, dword ptr [rip + 0x18e3872]	mul(mem)	
+51a920	51a9df	B4	imul ecx, dword ptr [rip + 0x18e36ce]	mul(mem)	
+51b150	51b2fd	B4	imul eax, dword ptr [rip + 0x18e2db0], 0x1e	mul(mem)	
+51c3c0	51caee	BC	movss xmm0, dword ptr [rip + 0x18e15c6]	mul	51cafc mulss xmm0, dword ptr [rip + 0x17cf06c]
+51dc90	51dc96	BC	movss xmm0, dword ptr [rip + 0x18e041e]	mul	51dca0 mulss xmm0, dword ptr [rip + 0x804f94]
+51dc90	51dcca	BC	movss xmm0, dword ptr [rip + 0x18e03ea]	mul	51dcd2 mulss xmm0, dword ptr [rip + 0x3a8292]
+51de30	51de4d	BC	movss xmm0, dword ptr [rip + 0x18e0267]	mul	51de57 mulss xmm0, dword ptr [rip + 0x804ddd]
+51de30	51de7c	BC	movss xmm0, dword ptr [rip + 0x18e0238]	mul	51de84 mulss xmm0, dword ptr [rip + 0x3a80e0]
+51e0a0	51e0a8	BC	movss xmm0, dword ptr [rip + 0x18e000c]	mul	51e0b0 mulss xmm0, dword ptr [rip + 0x3a7eb4]
+51e170	51e18a	BC	movss xmm0, dword ptr [rip + 0x18dff2a]	mul	51e194 mulss xmm0, dword ptr [rip + 0x804aa0]
+51e170	51e1b9	BC	movss xmm0, dword ptr [rip + 0x18dfefb]	mul	51e1c1 mulss xmm0, dword ptr [rip + 0x3a7da3]
+526d80	526db5	B4	mov edx, dword ptr [rip + 0x18d72f9]	overwritten	
+528f00	528f34	B4	mov edx, dword ptr [rip + 0x18d517a]	overwritten	
+53efc0	53f000	B4	imul r8d, dword ptr [rip + 0x18bf0ac]	mul(mem)	
+53efc0	53f052	B4	movsx ecx, word ptr [rip + 0x18bf05b]	mul	53f05c imul ecx, eax
+53efc0	53f085	B4	movsx ecx, word ptr [rip + 0x18bf028]	mul	53f090 imul ecx, eax
+53f0d0	53f19c	B4	imul edx, dword ptr [rip + 0x18bef11]	mul(mem)	
+53f0d0	53f2c9	B4	imul r8d, dword ptr [rip + 0x18bede3]	mul(mem)	
