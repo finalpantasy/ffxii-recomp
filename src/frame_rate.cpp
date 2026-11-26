@@ -634,6 +634,14 @@ void f_0022A580(::recomp::Ctx& c) {
     if (next == 0 || now > next + 4 * step) next = now;
     if (now < next) recomp::platform::SleepUntilNs(next);
     next += step;
+    // Frames that run no driver (pause, and the fade out of it) still need
+    // every k-th frame to be a tick frame: the timeline module's 0x184950
+    // calls are gated by TickFrame(). Without this the flag kept whatever
+    // the last driver call left; when that was "no tick", the pause fade got
+    // 0 ticks forever and the game stayed dimmed (alt-tab, 2026-11-26).
+    // A driver called in this frame overrides it in BeginUpdate.
+    static uint64_t frames = 0;
+    g_tick_now = frames++ % uint64_t(SimMult()) == 0;
   }
   f_0022A580_lifted(c);
 }
