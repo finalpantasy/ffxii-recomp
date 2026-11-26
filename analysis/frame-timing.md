@@ -406,3 +406,27 @@ for `--fps 120` were of that kind.
   message codes (0x2CA6, 0x1C) and copies values through 0x17E070 into
   +0xC4/+0xC8 of a menu object. Where the "30"/"60" labels come from is not
   found yet; the debug listing 0x1CD0E0 has its own table at 0x1DFCAD0.
+
+### 30/60/120/240 in the menu (2026-11-26)
+
+- The labels are strings 307 ("30 FPS", value 0) and 308 ("60 FPS", value 1)
+  of `ps2data/image/ff12/test_battle/<lang>/binaryfile/menu_command.bin`.
+- `src/fps_menu.cpp`: when the game opens that file, `src/mods.cpp` serves a
+  copy (the mod-merged text, else the archive original) with string 308
+  widened to "240 FPS", records where the read puts it in guest memory, and
+  rewrites the label there for the current choice.
+- A manifest `hook 001D4965 fps_menu_limit` sits before the setter call in
+  the FrameLimit case of 0x1D1660 (`esi` = new value). It steps 30, 60, 120,
+  240 by `bl`, keeps the game field at 1 for 60 and up, and saves the choice
+  as `FrameRate = N` in `<exe dir>/ffxii_recomp.ini`. The 0x1EDDC0 wrapper
+  reads it at startup when the field is 1 and no `--fps`/`FFXII_SIM_MULT`
+  is set; `--fps` always wins.
+- In windowed mode the game's cursor skips VSync and Frame Rate Limit, as in
+  retail; test in borderless (`ScreenMode=SM_BORDERLESS`).
+- Verified headless at 60 fps (`win-fpsmenu9.log`): five right presses gave
+  120, 240, 30, 60, 120 and the row showed "120 FPS"; the next start with no
+  `--fps` logged `SIM_MULT=2` (`win-fpsmenu10.log`). At `--fps 120` the
+  scripted Y press that opens the main menu was lost (`win-fpsmenu1.log`).
+- Not done: no restart prompt between 60, 120 and 240 (the game field does
+  not change); the label cache in `mods.cpp` does not refresh on mods hot
+  reload; rates that are not multiples of 60 need a fractional frames-per-tick.
