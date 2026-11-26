@@ -36,6 +36,7 @@ struct Mat4 {
 // 0x1DFD050 (setter 0x1DF340); FrameLimit is index 18, +0x48 (0 = 30 fps).
 inline constexpr Global<uint64_t> kSettings{0x1F82D20};
 inline constexpr uint64_t kSettingFrameLimit = 0x48;
+inline constexpr uint64_t kSettingVSync = 0x0C;  // Graphics Settings > Vsync, nonzero = On
 
 // --- Frame timing (set by 0x1EDDC0 from the FrameLimit setting) ---
 // Frames per 30 Hz tick: 1 at 30 fps, 2 at 60 fps (2k at --fps 60k).

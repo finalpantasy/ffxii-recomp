@@ -44,6 +44,8 @@ namespace recomp::hle {
 extern double (*g_fps_overlay_extra)();
 // SwARc xinput.cpp: true gives the game the same input as its last read.
 extern bool (*g_input_hold)(int kind);
+// SwARc dxgi.cpp: the sync interval for each present; null keeps the game's.
+extern uint32_t (*g_dxgi_present_interval)(uint32_t interval);
 }  // namespace recomp::hle
 
 namespace {
@@ -61,6 +63,17 @@ double OverlayTicksPerSecond() {
   return rate > 1000 ? 0 : rate;  // the counter starts or resets
 }
 const bool kOverlayExtra = (::recomp::hle::g_fps_overlay_extra = &OverlayTicksPerSecond, true);
+
+// The windowed and borderless limiter path (0x6237D0) presents with interval
+// 0 whatever the Vsync setting says (Kimi, win-kimi-vsync-borderless.log).
+// Keep a nonzero request; otherwise sync to the display when Vsync is On.
+uint32_t PresentInterval(uint32_t requested) {
+  if (requested) return requested;
+  const uint64_t settings = ::ffxii::guest::kSettings.Get();
+  if (!settings) return 0;
+  return *::ffxii::guest::At<uint32_t>(settings + ::ffxii::guest::kSettingVSync) ? 1 : 0;
+}
+const bool kPresentInterval = (::recomp::hle::g_dxgi_present_interval = &PresentInterval, true);
 }  // namespace
 
 namespace recomp::ffxii {
