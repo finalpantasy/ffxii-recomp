@@ -269,6 +269,19 @@ fps_phase_offset`) multiplies the added step by k. In `win-phase1.log`
 (`fight7-x.txt`, `--fps 120`, about 95% machine load) it logged steps
 1024 -> 2048 and 341 -> 682, the 60 fps values, with no fatal.
 
+Per-frame motion check (2026-11-26, about 1% machine load): a Luau probe
+(`A:/AI/ffxii-win/run/mods-tick`) logged the tick counter 0x208F570 and the
+player's x, z (pointer from the talk search, 0x3DA5A0 called from 0x25BC76)
+after every field handler call (0x22A770). Walking at `--fps 120` (save 011,
+Bhujerba, `input/walk120.txt`, `win-walk120.log`) gave 1,329 handler calls
+per 665 ticks. The player moved on every update, 544 of them updates with no
+tick, by an even 0.05 units an update: half the 60 fps step, so the same 6
+units a second. Movement therefore runs every frame at native 120, not only
+on tick frames. An idle run with every frame dumped (`win-anim120.log`)
+showed Vaan's idle animation changing in all 63 consecutive frame pairs, but
+writing a PPM every frame slowed it to about 52 presents a second, so that
+run alone does not separate tick frames from in-between ones.
+
 Not adjusted:
 - 0x53B129, debug text formatting.
 - The other 1EDE70/1EDDA0/1EDE80 sites. A game-clock A/B check covers them
