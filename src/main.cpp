@@ -31,9 +31,10 @@ void Usage() {
                "  --mod-lab         serve the Mod Lab page (127.0.0.1:8723) and open it: the\n"
                "                    same test mod in each language, timed per hook call\n"
                "  --mod-lab-run     run the lab once and print the results as JSON\n"
-               "         [--interp] [--interp-no-pace] [--interp-t T] [-- ARGS...]\n"
+               "         [--interp] [--fps-overlay] [--interp-no-pace] [--interp-t T] [-- ARGS...]\n"
                "  --interp          show a blended frame between each two game frames\n"
                "                    (60 Hz game logic, twice the presented frame rate)\n"
+               "  --fps-overlay     show frame rate, slowest frame and game ticks per second\n"
                "  --interp-no-pace  present the blended and real frame together (testing)\n"
                "  --interp-t T      blend point between the frames, 0..1 (default 0.5)\n"
                "         [--fps N]\n"
@@ -95,6 +96,10 @@ int main(int argc, char** argv) {
       // present a blended copy before it.
       SetSwitch("FFXII_D3D_RECORD", "1");
       SetSwitch("FFXII_D3D_INTERP", "1");
+    } else if (arg == "--fps-overlay") {
+      // SwARc dxgi.cpp: presented fps, slowest frame of the last second and
+      // game ticks per second in the top-left corner.
+      SetSwitch("FFXII_FPS_OVERLAY", "1");
     } else if (arg == "--interp-no-pace") {
       SetSwitch("FFXII_D3D_PACE", "0");
     } else if (arg == "--interp-t" && i + 1 < argc) {

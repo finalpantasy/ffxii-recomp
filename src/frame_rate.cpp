@@ -37,6 +37,28 @@
 #include "x86/probe_hook.h"
 #include "x86/runtime.h"
 
+namespace recomp::hle {
+// SwARc dxgi.cpp, --fps-overlay: a third number under the frame rate.
+extern double (*g_fps_overlay_extra)();
+}  // namespace recomp::hle
+
+namespace {
+// 1/60 s game ticks per second since the previous call (the overlay calls it
+// every 0.5 s). 60 means the game runs at normal speed.
+double OverlayTicksPerSecond() {
+  static uint32_t last_ticks = 0;
+  static auto last_time = std::chrono::steady_clock::now();
+  const uint32_t t = ::ffxii::guest::kTicks.Get();
+  const auto now = std::chrono::steady_clock::now();
+  const double dt = std::chrono::duration<double>(now - last_time).count();
+  const double rate = dt > 0 ? double(uint32_t(t - last_ticks)) / dt : 0;
+  last_ticks = t;
+  last_time = now;
+  return rate > 1000 ? 0 : rate;  // the counter starts or resets
+}
+const bool kOverlayExtra = (::recomp::hle::g_fps_overlay_extra = &OverlayTicksPerSecond, true);
+}  // namespace
+
 namespace recomp::ffxii {
 void MaybeStartWatch(uint64_t frame);
 void CbScanFrame();
