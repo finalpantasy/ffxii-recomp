@@ -218,7 +218,7 @@ void f_001EDDC0(::recomp::Ctx& c) {
   const bool fps60 = uint32_t(c.rcx) != 0;
   if (fps60 && EnvRate() <= 0) {
     const int saved = ::ffxii::fps_menu::SavedRate();
-    if (saved == 120 || saved == 240) g_menu_rate = saved;
+    if (saved > 60 && ::ffxii::fps_menu::IsMenuRate(saved)) g_menu_rate = saved;
   }
   f_001EDDC0_lifted(c);
   if (!fps60 || Rate() <= 60) return;
@@ -674,18 +674,19 @@ bool FpsHook(recomp::Ctx& c, uint64_t va, const char* name) {
   if (name && std::strncmp(name, "fps_", 4) == 0 && ScaleHook(c, va, name)) return true;
   if (va == 0x1D4965) {
     // Config > Graphics Settings > Frame Rate Limit. The retail row flips
-    // FrameLimit (esi = new value, about to be stored); step through 30, 60,
-    // 120 and 240 instead (bl != 0 steps down, as the handler's other rows
+    // FrameLimit (esi = new value, about to be stored); step through
+    // fps_menu::kRates (30, 60, 120, 144, 165, 240) instead (bl != 0 steps down, as the handler's other rows
     // do). The game field is 1 for every choice from 60 up; fps_menu saves
     // the choice and relabels "60 FPS".
-    static const int rates[] = {30, 60, 120, 240};
     const bool field60 = ::ffxii::guest::kSettings.Get() &&
                          *::ffxii::guest::At<uint32_t>(::ffxii::guest::kSettings.Get() +
                                                        ::ffxii::guest::kSettingFrameLimit) == 1;
     const int cur = ::ffxii::fps_menu::Choice(field60, Rate());
+    const int* rates = ::ffxii::fps_menu::kRates;
+    const int n = ::ffxii::fps_menu::kRateCount;
     int i = 0;
-    while (i < 3 && rates[i] != cur) ++i;
-    i = (i + ((uint8_t(c.rbx) != 0) ? 3 : 1)) % 4;
+    while (i < n - 1 && rates[i] != cur) ++i;
+    i = (i + ((uint8_t(c.rbx) != 0) ? n - 1 : 1)) % n;
     c.rsi = rates[i] != 30 ? 1 : 0;
     ::ffxii::fps_menu::SetChoice(rates[i]);
     return true;

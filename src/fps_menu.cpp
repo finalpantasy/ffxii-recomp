@@ -83,7 +83,7 @@ int Choice(bool game_field_60, int running_fps) {
   if (g_choice) return g_choice;
   if (!game_field_60) return 30;
   const int saved = SavedRate();
-  if (saved == 60 || saved == 120 || saved == 240) return saved;
+  if (IsMenuRate(saved)) return saved;
   return running_fps >= 60 ? running_fps : 60;
 }
 

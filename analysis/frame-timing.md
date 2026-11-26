@@ -427,9 +427,15 @@ for `--fps 120` were of that kind.
   120, 240, 30, 60, 120 and the row showed "120 FPS"; the next start with no
   `--fps` logged `SIM_MULT=2` (`win-fpsmenu10.log`). At `--fps 120` the
   scripted Y press that opens the main menu was lost (`win-fpsmenu1.log`).
-- Not done: no restart prompt between 60, 120 and 240 (the game field does
+- Since 2026-11-26 the row also offers 144 and 165 (`fps_menu::kRates`: 30,
+  60, 120, 144, 165, 240). Verified (`win-fpsmenu13.log`): with
+  `FrameRate = 165` saved, the next start logged `165 fps: 5.5 frames per
+  30 Hz tick` and the row showed "165 FPS". Stepping through the new choices
+  with the pad is not verified: two timed-press runs (`win-fpsmenu11/12`)
+  lost or gained a dpdown under load and landed on other rows.
+- Not done: no restart prompt between rates from 60 up (the game field does
   not change); the label cache in `mods.cpp` does not refresh on mods hot
-  reload; rates that are not multiples of 60 need a fractional frames-per-tick.
+  reload.
 
 ## Pad input at k*60 fps (2026-11-26)
 
