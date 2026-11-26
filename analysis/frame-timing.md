@@ -470,7 +470,7 @@ frames (`FFXII_INPUT_TRACE`, `win-lead-intrace.log`).
 
 `--fps N` (`FFXII_FPS=N`) now takes any multiple of 30 from 60 up: 90, 120, 150, 180, 240. `FFXII_SIM_MULT=k` still works and means 60k. In `src/frame_rate.cpp` the integer k became the rate R:
 
-- `Per()` = R / 30 is the game's whole frames per 30 Hz step (0x1DFE0B4), so R has to be a multiple of 30. Rates like 144 or 165 would need fractional frames per step; see the plan below.
+- `Per()` = R / 30 is the game's whole frames per 30 Hz step (0x1DFE0B4). Rates like 144 or 165 need fractional frames per step; see the next section.
 - `TickAt(n)` = (n·60) mod R < 60 picks the tick updates: every second update at 120, two of every three at 90.
 - The limiter, the debt interval, the pacing step, the filter and decay rescales and the oscillator step use R / 60 as a real number.
 
@@ -487,4 +487,26 @@ Verified (`fight7-x.txt`, Inner Ward save, `data-iw-nv`):
 | `win-any120c.log` (120 fps) | 44-73% | 116-120 for the whole run | 60.0 | 0-26 |
 | `win-any120.log` (120 fps, before the fix) | 80-85% | 87-107 | 59 | up to 156 |
 
-Plan for 144 and 165: frames per step would be 4.8 and 5.5. The multiply sites in `analysis/maps/frame-global-reads.tsv` would get hooks that rewrite N × B4 to round(N × R / 30). The float reads would get R / 30, and the `fps_div` share would become floor((i+1)·a·30/R) − floor(i·a·30/R). This needs a relift.
+## Any rate from 60 up: 144, 165 (2026-11-26)
+
+`--fps N` now takes any rate from 60 up. At a rate R that is not a multiple of 30, frames per 30 Hz step are fractional (4.8 at 144, 5.5 at 165). 0x1DFE0B4 (B4) can only hold a whole number, so the recomp stores P = round(R / 30) there (5 at 144, 6 at 165), puts the exact R / 30 in the float B8 and 30 / R in BC, and corrects the code that reads B4:
+
+- **Products.** `tools/gen_fps_scale_hooks.py <exe> analysis/maps/functions.tsv analysis/maps/jumptables.tsv` follows each B4 load through register copies, cmov and branch merges to the instruction that multiplies it (imul, lea, shl, cvtsi2ss/sd). It writes manifest lines for the instruction after it: `fps_scale_<reg>` rescales the integer result by (R / 30) / P and rounds; `fps_fscale_ss|sd_<xmm>` does the same for a float. Where the register only maybe holds B4 (after a cmov or a merge), `fps_pre_<reg>` checks before the product whether the operand equals P, and a `fps_cscale_*` hook scales only in that case. A product that lands on a branch target gets `fps_pre_always` on the instruction before it. The generator printed 175 lines; they are in `analysis/maps/lifter.manifest` above the Frame Rate Limit hooks.
+- **Hand-written sites.** `fps_divshare_ebx` at 0x258DAE and `fps_divfloor_r9d` at 0x3AF12F (divisions the generator does not model), `fps_tbl_2bda90` at 0x2BDADD (a table of 12, 15, 20, 25, 30 frames scaled by B4; the hook writes round(n · R / 30)), and `fps_byte6_3e2e49` at 0x3E2E49 (6 · B4 stored in a byte).
+- **Counter sites.** 0x1EDEC0, 0x519001, 0x51B1A5 and 0x51B1CF used "counter mod B4 == 0" or counter / B4. They now use `StepAt(c)`, which is true when floor(c · 30 / R) changes, and `Steps(c)` = floor(c · 30 / R).
+- **`fps_div`.** The per-tick amount a is split over the updates as floor((i+1)·a·30/R) − floor(i·a·30/R), so the shares add up to a over every 30 Hz step.
+
+The hooks do nothing at multiples of 30 (`Fractional()` is false), so 90, 120 and 240 run the old code. `FFXII_NO_B4_SCALE=1` turns them off for A/B checks, and `FFXII_B4_SKIP=lo-hi,...` (hex VAs) turns off the hooks in those ranges, for finding a site that misbehaves.
+
+Accepted small errors: compare, add and subtract sites that use B4 as a whole number of frames (0x26C1B2, 0x26C361/0x26C38E, 0x2F18DC, 0x472B00/37/6E, 0x2F408D/0x2F40A9, 0x422457) stay on P, so those timers are off by less than one frame per 30 Hz step.
+
+Verified (`fight7-x.txt`, Inner Ward save, `data-iw-nv`, machine load 60-100% from other work throughout):
+
+| Run | Presented fps (calm field) | Ticks per second | Notes |
+|---|---|---|---|
+| `win-f165.log` (165 fps) | 155-165 | 60.0 | frames from 150 s on render correctly; about 70,000 hook calls per 5 s |
+| `win-f144skipA.log` (144 fps) | 136-144 | 60.0 | |
+| `win-f144abOn.log` / `win-f144abOff.log` (144 fps, hooks on/off) | up to 143.8 / 142.3 | 60.0 | both stall at 3-10 fps for about a minute while machine load is at 100% |
+| `win-f120reg.log` (120 fps, regression) | 112-120 | 60.0 | 93-100% load |
+
+A 144 fps run that first looked slow with the hooks on (`win-frac144.log`, 35-55 ticks/s) was machine load: the A/B pair stalled the same way with the hooks off. `win-f144abOn.log` alone logged 2,364 `[sead] Action exhausted!!` errors from the sound driver during its stall; no other run did, including other runs with the hooks on. Not yet explained.

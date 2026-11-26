@@ -38,7 +38,7 @@ void Usage() {
                "  --interp-no-pace  present the blended and real frame together (testing)\n"
                "  --interp-t T      blend point between the frames, 0..1 (default 0.5)\n"
                "         [--fps N]\n"
-               "  --fps N           native frame rate, a multiple of 30 (90, 120, 150, 240):\n"
+               "  --fps N           native frame rate, 60 or more (90, 120, 144, 165, 240):\n"
                "                    the game updates N times a second at unchanged speed;\n"
                "                    needs FrameLimit 60 in the game's settings\n";
 }
@@ -107,8 +107,8 @@ int main(int argc, char** argv) {
     } else if (arg == "--fps" && i + 1 < argc) {
       // src/frame_rate.cpp reads FFXII_FPS: updates per second.
       const int fps = std::atoi(argv[++i]);
-      if (fps < 60 || fps % 30 != 0) {
-        std::cerr << "--fps takes a multiple of 30, at least 60\n";
+      if (fps < 60) {
+        std::cerr << "--fps takes 60 or more\n";
         return 2;
       }
       SetSwitch("FFXII_FPS", std::to_string(fps));
