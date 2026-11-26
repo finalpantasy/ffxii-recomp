@@ -40,6 +40,8 @@
 namespace recomp::hle {
 // SwARc dxgi.cpp, --fps-overlay: a third number under the frame rate.
 extern double (*g_fps_overlay_extra)();
+// SwARc xinput.cpp: true gives the game the same input as its last read.
+extern bool (*g_input_hold)(int kind);
 }  // namespace recomp::hle
 
 namespace {
@@ -208,10 +210,80 @@ constexpr int kTraceSlots = 16;
 uint64_t g_trace_va[kTraceSlots] = {}, g_trace_calls[kTraceSlots] = {};
 uint64_t g_field_pre = 0, g_field_loop = 0, g_field_other = 0;
 bool TickFrame() { return g_tick_now; }
+// Input order trace: FFXII_INPUT_TRACE=<frame> logs 300 events from that
+// limited frame on (pad/key reads, pacing, driver calls) with the tick flag.
+uint64_t g_frame_no = 0;
+uint64_t TraceStart() {
+  static const uint64_t v = [] {
+    const char* e = recomp::Env("INPUT_TRACE");
+    return e ? std::strtoull(e, nullptr, 10) : ~0ull;
+  }();
+  return v;
+}
+void TraceInput(const char* what, int arg) {
+  static int left = 300;
+  if (g_frame_no < TraceStart() || left <= 0) return;
+  --left;
+  std::fprintf(stderr, "[input] f%llu %s %d tick %d@", (unsigned long long)g_frame_no, what, arg,
+               int(g_tick_now));
+}
 void BeginUpdate(Driver d) {
   ++g_updates;
   ++g_driver_frame[d];
   g_tick_now = g_driver_updates[d]++ % uint64_t(SimMult()) == 0;
+  TraceInput("driver", int(d));
+}
+// Pad and keyboard reads (SwARc g_input_hold): traced only. Holding the read
+// state does not help: the pad samples are queued and drained by 0x36FDF0.
+bool InputHold(int kind) {
+  TraceInput(kind ? "keys" : "pad", kind);
+  return false;
+}
+const bool kInputHold = (::recomp::hle::g_input_hold = &InputHold, true);
+
+// 0x36FDF0 drains the queued pad samples and ORs them into the game's pad
+// words (held 0x2AD9E04, pressed 0x2AD9E08, released 0x2AD9E0C, repeat
+// 0x2AD9E10; copies at +0x10). Menus and the field read "pressed" only on
+// tick frames, so at k*60 fps a press drained on an in-between frame was
+// cleared by the next drain before anything read it: confirm needed several
+// presses (owner, 2026-11-26). On in-between frames the drain is skipped and
+// the samples wait in the queue for the next tick frame.
+// FFXII_PAD_EVERY_FRAME=1 drains every frame (the old behavior, for A/B).
+recomp::GuestFn g_pad_update_orig = nullptr;
+uint64_t g_pad_runs = 0, g_pad_skips = 0;
+uint64_t g_pad_pressed = 0;  // tick-frame drains that left a "pressed" bit
+uint64_t g_pad_words[4] = {};  // tick-frame drains with a bit in word +4/+8/+C/+10
+bool PadEveryFrame() {
+  static const bool v = recomp::Env("PAD_EVERY_FRAME") != nullptr;
+  return v;
+}
+void PadUpdateHook(::recomp::Ctx& c) {
+  if (HighRate() && !g_tick_now && !PadEveryFrame()) {
+    ++g_pad_skips;
+    TraceInput("padupdate-skip", 0);
+    c.rsp += 8;  // ret
+    return;
+  }
+  ++g_pad_runs;
+  TraceInput("padupdate", 0);
+  g_pad_update_orig(c);
+  // What tick-frame logic will see: count drains that leave a press.
+  if (g_tick_now && recomp::g_guest_base) {
+    // Words +4, +8, +C, +10 (two devices each): count drains with any bit.
+    uint16_t w[8];
+    std::memcpy(w, recomp::g_guest_base + 0x2AD9E04, sizeof w);
+    for (int i = 0; i < 4; ++i)
+      if (w[2 * i] | w[2 * i + 1]) ++g_pad_words[i];
+    if (w[2] | w[3]) ++g_pad_pressed;
+  }
+}
+void InstallPadUpdateHook() {
+  static bool done = false;
+  if (done) return;
+  done = true;
+  if (!HighRate()) return;
+  if (!recomp::SetEntryHook(0x36FDF0, &PadUpdateHook, &g_pad_update_orig) || !g_pad_update_orig)
+    std::fprintf(stderr, "[frame_rate] pad update hook 36FDF0 not installed@");
 }
 uint64_t g_tick_hist[2][4] = {};  // ticks added per update: [tick update][0/1/2/3+]
 uint32_t Ticks() {
@@ -513,6 +585,14 @@ void f_006234A0(::recomp::Ctx& c) {
                  (unsigned long long)g_filter_calls[0], (unsigned long long)g_filter_calls[1], g_filter_last[0],
                  g_filter_last[1]);
     g_filter_calls[0] = g_filter_calls[1] = 0;
+    std::fprintf(stderr, "[frame_rate]   pad update 36FDF0 runs %llu skipped %llu, presses seen on tick frames %llu\n",
+                 (unsigned long long)g_pad_runs, (unsigned long long)g_pad_skips,
+                 (unsigned long long)g_pad_pressed);
+    std::fprintf(stderr, "[frame_rate]   pad words on tick frames +4 %llu +8 %llu +C %llu +10 %llu\n",
+                 (unsigned long long)g_pad_words[0], (unsigned long long)g_pad_words[1],
+                 (unsigned long long)g_pad_words[2], (unsigned long long)g_pad_words[3]);
+    g_pad_runs = g_pad_skips = g_pad_pressed = 0;
+    for (auto& n : g_pad_words) n = 0;
     for (int i = 0; i < kTraceSlots && g_trace_va[i]; ++i) {
       std::fprintf(stderr, "[frame_rate]   trace %06llX calls %llu\n", (unsigned long long)g_trace_va[i],
                    (unsigned long long)g_trace_calls[i]);
@@ -643,6 +723,9 @@ void f_0022A580(::recomp::Ctx& c) {
     static uint64_t frames = 0;
     g_tick_now = frames++ % uint64_t(SimMult()) == 0;
   }
+  ++g_frame_no;
+  TraceInput("pace", 0);
+  InstallPadUpdateHook();
   f_0022A580_lifted(c);
 }
 
