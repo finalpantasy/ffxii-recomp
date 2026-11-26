@@ -29,6 +29,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "fps_menu.h"
 #include "mod_index.h"
 #include "text_mods.h"
 #include "guest_globals.h"
@@ -58,6 +59,7 @@ struct Open {
   std::FILE* f;                                    // a mod's file, or
   std::shared_ptr<const ffxii::text::Bytes> mem;   // merged text
   uint64_t size;
+  bool fps_label = false;  // menu_command.bin with the widened frame-rate label
 };
 
 std::mutex g_mu;
@@ -186,21 +188,54 @@ uint64_t NewSlot() {
 
 }  // namespace
 
+namespace {
+// menu_command.bin with room for the 120/240 FPS labels (fps_menu.h), built
+// once per path from the mod-merged copy or the archive original. Null when
+// the file cannot be read or does not match the retail layout. g_mu held.
+std::shared_ptr<const ffxii::text::Bytes> FpsMenuFile(const std::string& norm) {
+  static std::unordered_map<std::string, std::shared_ptr<const ffxii::text::Bytes>> built;
+  const auto b = built.find(norm);
+  if (b != built.end()) return b->second;
+  std::shared_ptr<const ffxii::text::Bytes> src;
+  const auto m = g_text.files.find(norm);
+  if (m != g_text.files.end()) {
+    src = m->second;
+  } else if (!g_index.Find(norm)) {  // a single mod's whole copy keeps its own text
+    std::lock_guard lock(g_vbf_mu);
+    std::string err;
+    if (!g_vbf.IsOpen() && !g_vbf.Open(recomp::g_proc->game_dir + "/FFXII_TZA.vbf", err))
+      std::fprintf(stderr, "[fps_menu] %s\n", err.c_str());
+    auto orig = std::make_shared<ffxii::text::Bytes>();
+    if (g_vbf.IsOpen() && g_vbf.Read(norm, *orig, err)) src = orig;
+  }
+  auto out = src ? ffxii::fps_menu::Patch(*src) : nullptr;
+  if (!out) std::fprintf(stderr, "[fps_menu] %s left as is\n", norm.c_str());
+  return built[norm] = out;
+}
+}  // namespace
+
 namespace recomp::gen {
 
 void f_0019AEE0(Ctx& c) {
   const uint64_t mgr = c.rcx;
   std::lock_guard lock(g_mu);
-  if (!Init() || !mgr || !::ffxii::guest::kVbfManager.Get()) return f_0019AEE0_lifted(c);
+  if (!mgr || !::ffxii::guest::kVbfManager.Get()) return f_0019AEE0_lifted(c);
   const char* path = reinterpret_cast<const char*>(g_guest_base + c.rdx + ::ffxii::guest::At<::ffxii::guest::VbfManager>(mgr)->path_base);
   std::string rel(path, strnlen(path, 1024));
+  const std::string norm = ffxii::mods::Normalize(rel);
+  const bool enabled = Init();
+  std::shared_ptr<const ffxii::text::Bytes> fps_file =
+      ffxii::fps_menu::IsMenuCommand(norm) ? FpsMenuFile(norm) : nullptr;
+  if (!enabled && !fps_file) return f_0019AEE0_lifted(c);
   static const bool log_all = recomp::Env("MODS_LOG") != nullptr;
   if (log_all) std::fprintf(stderr, "[mods] open %s\n", rel.c_str());
   std::shared_ptr<const ffxii::text::Bytes> mem;
   std::FILE* f = nullptr;
   uint64_t size = 0;
-  if (!g_text.files.empty()) {
-    const auto m = g_text.files.find(ffxii::mods::Normalize(rel));
+  if (fps_file) {
+    mem = fps_file, size = mem->size();
+  } else if (!g_text.files.empty()) {
+    const auto m = g_text.files.find(norm);
     if (m != g_text.files.end()) mem = m->second, size = mem->size();
   }
   if (!mem) {
@@ -227,7 +262,7 @@ void f_0019AEE0(Ctx& c) {
   reader->position = 0;
   reader->cache = cache;
   ::ffxii::guest::At<::ffxii::guest::VbfEntry>(entry)->size = size;
-  g_open[r] = {f, std::move(mem), size};
+  g_open[r] = {f, std::move(mem), size, fps_file != nullptr};
   std::fprintf(stderr, "[mods] %s (%llu bytes%s)\n", path, static_cast<unsigned long long>(size),
                f ? "" : ", merged text");
   Return(c, r);
@@ -248,6 +283,7 @@ void f_00215110(Ctx& c) {
   if (n && it->second.mem) {
     std::memcpy(g_guest_base + c.rdx, it->second.mem->data() + pos, n);
     got = n;
+    if (it->second.fps_label) ffxii::fps_menu::OnRead(c.rdx, pos, n);
   } else if (n && Seek(it->second.f, pos) == 0) {
     got = std::fread(g_guest_base + c.rdx, 1, n, it->second.f);
   }

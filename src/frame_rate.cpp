@@ -25,6 +25,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+
+#include "fps_menu.h"
 #include <map>
 #include <set>
 #include <vector>
@@ -89,12 +91,19 @@ void f_001EDEC0_lifted(::recomp::Ctx& c);
 void f_0032AE70_lifted(::recomp::Ctx& c);
 
 namespace {
-int SimMult() {
+// Set at startup (0x1EDDC0) from the Frame Rate Limit choice saved by the
+// options menu (fps_menu.h), unless --fps / FFXII_SIM_MULT gives one.
+int g_menu_mult = 0;
+int EnvSimMult() {
   static const int k = [] {
     const char* e = recomp::Env("SIM_MULT");
-    return e ? std::atoi(e) : 1;
+    return e ? std::atoi(e) : 0;
   }();
   return k;
+}
+int SimMult() {
+  if (const int k = EnvSimMult(); k > 0) return k;
+  return g_menu_mult > 0 ? g_menu_mult : 1;
 }
 // FFXII_SKIP_DRIVER=k: the limiter runs k times per 1/60 s, and the per-frame
 // driver 0x250540 (update and task lists) runs on every k-th frame only.
@@ -173,6 +182,10 @@ void MaybeCamLog() {
 
 void f_001EDDC0(::recomp::Ctx& c) {
   const bool fps60 = uint32_t(c.rcx) != 0;
+  if (fps60 && EnvSimMult() <= 0) {
+    const int saved = ::ffxii::fps_menu::SavedRate();
+    if (saved == 120 || saved == 240) g_menu_mult = saved / 60;
+  }
   f_001EDDC0_lifted(c);
   const int k = SimMult();
   if (!fps60 || k <= 1) return;
@@ -361,6 +374,24 @@ bool FpsHook(recomp::Ctx& c, uint64_t va, const char* name) {
   (void)name;
   uint8_t* B = recomp::g_guest_base;
   const uint32_t per = uint32_t(2 * SimMult());  // frames per 30 Hz step
+  if (va == 0x1D4965) {
+    // Config > Graphics Settings > Frame Rate Limit. The retail row flips
+    // FrameLimit (esi = new value, about to be stored); step through 30, 60,
+    // 120 and 240 instead (bl != 0 steps down, as the handler's other rows
+    // do). The game field is 1 for every choice from 60 up; fps_menu saves
+    // the choice and relabels "60 FPS".
+    static const int rates[] = {30, 60, 120, 240};
+    const bool field60 = ::ffxii::guest::kSettings.Get() &&
+                         *::ffxii::guest::At<uint32_t>(::ffxii::guest::kSettings.Get() +
+                                                       ::ffxii::guest::kSettingFrameLimit) == 1;
+    const int cur = ::ffxii::fps_menu::Choice(field60, 60 * SimMult());
+    int i = 0;
+    while (i < 3 && rates[i] != cur) ++i;
+    i = (i + ((uint8_t(c.rbx) != 0) ? 3 : 1)) % 4;
+    c.rsi = rates[i] != 30 ? 1 : 0;
+    ::ffxii::fps_menu::SetChoice(rates[i]);
+    return true;
+  }
   if (name && std::strcmp(name, "fps_div") == 0) {
     // `div dword [0x1DFE0B4]` sites turn a per-tick amount (edx:eax) into a
     // per-update step. Integer division truncates: at k*60 fps `2 / 4` is 0,

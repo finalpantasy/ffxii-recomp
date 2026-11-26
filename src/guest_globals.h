@@ -32,6 +32,11 @@ struct Mat4 {
   float m[4][4];
 };
 
+// GameSetting.ini settings object: one int per key of the name table at
+// 0x1DFD050 (setter 0x1DF340); FrameLimit is index 18, +0x48 (0 = 30 fps).
+inline constexpr Global<uint64_t> kSettings{0x1F82D20};
+inline constexpr uint64_t kSettingFrameLimit = 0x48;
+
 // --- Frame timing (set by 0x1EDDC0 from the FrameLimit setting) ---
 // Frames per 30 Hz tick: 1 at 30 fps, 2 at 60 fps (2k at --fps 60k).
 inline constexpr Global<int32_t> kFramesPerTick{0x1DFE0B4};

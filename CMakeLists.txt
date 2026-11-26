@@ -123,7 +123,7 @@ if(TARGET ffxii_wasm_mods AND CMAKE_C_COMPILER_ID MATCHES "Clang")
 endif()
 
 if(EXISTS "${FFXII_GENERATED_DIR}/table.cpp")
-    recomp_add_lifted(ffxii_lifted "${FFXII_GENERATED_DIR}" src/mods.cpp src/mod_index.cpp ${FFXII_TEXT_SOURCES} src/probe.cpp src/frame_rate.cpp src/watch.cpp src/cbscan.cpp src/direct_hooks.cpp)
+    recomp_add_lifted(ffxii_lifted "${FFXII_GENERATED_DIR}" src/mods.cpp src/fps_menu.cpp src/mod_index.cpp ${FFXII_TEXT_SOURCES} src/probe.cpp src/frame_rate.cpp src/watch.cpp src/cbscan.cpp src/direct_hooks.cpp)
     add_executable(ffxii_recomp src/main.cpp src/native_mods.cpp ${FFXII_LAB_SOURCES})
     add_dependencies(ffxii_recomp ffxii_modlab)
     target_include_directories(ffxii_recomp PRIVATE include)

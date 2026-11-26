@@ -161,3 +161,5 @@ hook 002C758E fps_div
 hook 003A83AE fps_div
 hook 003FB2BD fps_div
 hook 00407A77 fps_div
+# Config > Graphics Settings > Frame Rate Limit: 30/60/120/240 (src/fps_menu.h)
+hook 001D4965 fps_menu_limit
