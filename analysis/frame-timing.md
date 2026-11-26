@@ -344,8 +344,20 @@ presented frame at a chosen rate R, 0x1DFE0B4 should be R/30.
   then advance every R/60 updates; that is 1.5 at R = 90, so the
   every-k-th-call gate in `src/frame_rate.cpp` becomes an accumulator.
 - The divide sites truncate. `2 / B4` is already 0 at 120 fps, which is why
-  0x250730's tick add is hooked. Each divide needs a per-site step with a
-  carried remainder, so that the steps sum to the per-tick amount.
+  0x250730's tick add is hooked. Done for 120 fps (2026-11-26): the
+  manifest has `hook <VA> fps_div` on all 34 other `div [B4]` sites. Before
+  the divide, `FpsHook` rewrites the dividend so the quotient is this
+  update's share: share i of B4 is floor((i+1)a/B4) - floor(ia/B4), with i
+  counted per site over distinct updates. Every B4 updates then add up to
+  a exactly, all objects one site handles in an update get the same step,
+  and amounts that are multiples of B4 do not change. Found through the
+  save-crystal glow: at `--fps 120` the cyan glow on the party never faded
+  (at 60 fps it is gone within a second); with the hooks it fades like at
+  60 (`win-cr60c.log` against `win-cr120d.log`, data-eq, `crystal3.txt`).
+  Which site drove the glow was not isolated. The sites with amount 2
+  (0x22A19A, 0x252A2B, 0x252A9D, 0x258E58, 0x2695F6, 0x3A83AE, 0x407A77) had
+  a step of 0 at 120 fps; the 6/B4 sites (0x28A5A6, 0x28A6FC) ran at 2/3
+  speed. Rates that are not multiples of 30 still need B4 to be fractional.
 - For R not a multiple of 30 (144, 165), R/30 is fractional, and every
   multiply site needs a hook that writes round(N × R / 30), and every
   convert-to-float site the exact value. The manifest `hook` directive can

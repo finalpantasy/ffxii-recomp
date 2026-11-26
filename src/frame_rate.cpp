@@ -361,6 +361,40 @@ bool FpsHook(recomp::Ctx& c, uint64_t va, const char* name) {
   (void)name;
   uint8_t* B = recomp::g_guest_base;
   const uint32_t per = uint32_t(2 * SimMult());  // frames per 30 Hz step
+  if (name && std::strcmp(name, "fps_div") == 0) {
+    // `div dword [0x1DFE0B4]` sites turn a per-tick amount (edx:eax) into a
+    // per-update step. Integer division truncates: at k*60 fps `2 / 4` is 0,
+    // so a fade or counter with that step never moves (the save-crystal
+    // glow stayed on the party, 2026-11-26). Rewrite the dividend so this
+    // update's quotient is its share of the amount, so that every `per`
+    // consecutive updates add up to the amount exactly. The share is picked
+    // by how many distinct updates have run this site, so all objects
+    // handled by it in one update get the same step, and a site that only
+    // runs on tick frames still cycles through every share.
+    if (!HighRate() || uint32_t(c.rdx) != 0) return true;
+    struct Site {
+      uint64_t va, last_frame, updates;
+    };
+    static Site sites[64];
+    Site* s = nullptr;
+    for (Site& e : sites) {
+      if (e.va == va || e.va == 0) {
+        if (e.va == 0) e = Site{va, ~0ull, 0};
+        s = &e;
+        break;
+      }
+    }
+    if (!s) return true;
+    if (s->last_frame != g_frame_no) {
+      s->last_frame = g_frame_no;
+      ++s->updates;
+    }
+    const uint64_t a = uint32_t(c.rax);
+    const uint64_t ph = s->updates % per;
+    const uint64_t q = (ph + 1) * a / per - ph * a / per;
+    c.rax = uint32_t(q * per);
+    return true;
+  }
   if (name && std::strncmp(name, "trace_", 6) == 0) {
     // Manifest `hook <VA> trace_<VA>` lines: count entries, printed with
     // the FFXII_SPEEDLOG stats.
