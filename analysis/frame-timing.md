@@ -387,3 +387,22 @@ Not covered: code that counts frames without reading 0x1DFE0B4 (fixed
 `cmp counter, 60` style constants and the 136 callers of the 60 fps helpers
 0x1EDDA0, 0x1EDE80 and 0x1EDEC0). The four hard-coded sites already hooked
 for `--fps 120` were of that kind.
+
+## FrameLimit option in the menus (2026-11-26, static reading)
+
+- Setter 0x1DF340(settings, index, value) writes `settings[index]`; FrameLimit
+  is index 18 (0x12). Getters: 0x17D8F0 returns FrameLimit, 0x17E070(menu
+  index 1..23) returns the field for a menu row, 0x17E540 is its setter.
+- The options handler 0x1D1660 flips the value at 0x1D494F:
+  `FrameLimit = (FrameLimit != 1)`. Its multi-choice rows (for example +0x18
+  at 0x1D4972) step by direction `bl` and wrap.
+- 0x1EDDC0 (timing globals) runs only once, at startup, from 0x22BDF0, so a
+  FrameLimit change takes effect after a restart in the retail game too.
+- `FrameLimit == 1` is tested at 0x22BE15 (startup), 0x1DD586 (display-mode
+  enumeration) and 0x1D495D (menu). A raw value of 2 would read as 30 fps in
+  all three, so a higher choice should live in a recomp setting with the
+  game field kept at 1.
+- The config menu display (0x23B330, 0x23B6F0, 0x23BD40) is driven by
+  message codes (0x2CA6, 0x1C) and copies values through 0x17E070 into
+  +0xC4/+0xC8 of a menu object. Where the "30"/"60" labels come from is not
+  found yet; the debug listing 0x1CD0E0 has its own table at 0x1DFCAD0.
