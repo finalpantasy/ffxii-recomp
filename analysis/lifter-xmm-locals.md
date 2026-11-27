@@ -28,7 +28,25 @@ A/B at `--fps 120`, Inner Ward save, `fight7.txt`, 300 s each, same data, run ba
 
 Busy shares come from the thread sampler over 150-210 s. Machine load was 36-97% (new) and 36-88% (old) from other work, so the busy shares are the comparison; both runs hold the cap outside the dips, and neither logged a fatal. Logs: `win-xlnew.log`, `win-xlold.log`.
 
+## Lazy test in a local, inline alignment check (2026-11-26, later)
+
+`quiet::Lazy(c)` (lazy flags on and the default MXCSR) read `c.mxcsr` and `g_lazy_flags` on every SSE operation, and guest stores through `B` may alias both, so clang reloaded them each time. `CacheXmm` now also keeps the test in a local `bool LZ` and calls `Arith`, `Sqrt`, `MinMax` and `Comi` through new overloads that take it first (549,943 call sites, 5,046 functions). LZ is set at entry, after every `LIFT_RELOAD` and after every `Ldmxcsr`. That is enough because MXCSR changes only in LDMXCSR and in calls, and every call ends in `LIFT_RELOAD`, which the cached GPRs already depend on. The FFXII code has no LDMXCSR at all.
+
+`sse::CheckAligned`, the #GP check before each aligned 16-byte move (89,475 sites), was an out-of-line call that only tests four bits; it took 1.1% of the busiest thread by itself. It is now inline, with the failure in the cold `CheckAlignedFail`.
+
+Checks (2026-11-27): SwARc ctest 59 of 59; `lift_int64_test` 35,949 forms, 0 failed; `lift_sse64_test 300` 6,589 forms, 0 failed both native and with `RECOMP_SOFT_SSE=1` (the soft run now takes about 2 minutes, not 10).
+
+A/B at `FFXII_FPS=120`, `fight7-x.txt` from `data-iw-nv`, thread sampler over 150-210 s, machine load sampled every 2 s:
+
+| Run | Machine load (mean) | Game thread | Render thread | fps mean (whole run) |
+|---|---|---|---|---|
+| LZ, pair 1 (`win-lzNew.log`) | 49% | 65% | 68% | 115 |
+| XMM locals, pair 1 (`win-lzOld.log`) | 61% | 76% | 54% | 83 |
+| XMM locals, pair 2 (`win-lzOld3.log`) | 35% | 65% | 60% | 114 |
+| LZ, pair 2 (`win-lzNew2.log`) | 35% | 53% | 58% | 109 |
+
+Pair 2 ran at the same machine load and is the clean comparison: the game thread (top items f_001E2AF0, f_001E25F0) fell from 65% to 53% busy; the render thread, about two thirds driver and system DLL time, barely moved. On the game thread `sse::` helpers fell from 2.2% to 1.0% of samples and `CheckAligned` (0.8%) is gone. The fps means include load screens and dips, so they do not separate the builds. Pair 1's baseline ran under heavier load and fell well below the cap. The baseline exe once crashed at boot with exit 139 just after loading `nvapi64.dll` (`win-lzOld2-bootcrash.log`) and booted normally on the rerun; that exe predates this change.
+
 ## Possible follow-ups
 
-- The lazy SSE path still reads `c.mxcsr` and `g_lazy_flags` on every SSE operation; a per-function local would remove those loads.
 - `CvtFloat` and `CvtIntToF` have no inline fast path yet.
