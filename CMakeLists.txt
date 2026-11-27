@@ -124,6 +124,13 @@ endif()
 
 if(EXISTS "${FFXII_GENERATED_DIR}/table.cpp")
     recomp_add_lifted(ffxii_lifted "${FFXII_GENERATED_DIR}" src/mods.cpp src/fps_menu.cpp src/mod_index.cpp ${FFXII_TEXT_SOURCES} src/probe.cpp src/frame_rate.cpp src/watch.cpp src/cbscan.cpp src/direct_hooks.cpp)
+    # MSYS2 clang 23's SLP vectorizer crashes (access violation) on many
+    # lifted functions once XMM registers live in locals (2026-11-26:
+    # f_007422F0, f_007AF740, f_007651F0 and others), so generated files
+    # build without it.
+    file(GLOB _ffxii_gen "${FFXII_GENERATED_DIR}/gen_*.cpp")
+    set_source_files_properties(${_ffxii_gen} TARGET_DIRECTORY ffxii_lifted
+        PROPERTIES COMPILE_OPTIONS "-fno-slp-vectorize")
     add_executable(ffxii_recomp src/main.cpp src/native_mods.cpp ${FFXII_LAB_SOURCES})
     add_dependencies(ffxii_recomp ffxii_modlab)
     target_include_directories(ffxii_recomp PRIVATE include)
