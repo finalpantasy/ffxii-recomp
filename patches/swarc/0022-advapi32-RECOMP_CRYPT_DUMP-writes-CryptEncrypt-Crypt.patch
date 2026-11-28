@@ -1,0 +1,60 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: finalpantasy <finalpantasy@users.noreply.github.com>
+Date: Mon, 23 Nov 2026 04:22:45 -0500
+Subject: [PATCH 22/34] advapi32: RECOMP_CRYPT_DUMP writes
+ CryptEncrypt/CryptDecrypt plaintext
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ platforms/win32/src/win32/advapi32_crypt.cpp | 19 +++++++++++++++++++
+ 1 file changed, 19 insertions(+)
+
+diff --git a/platforms/win32/src/win32/advapi32_crypt.cpp b/platforms/win32/src/win32/advapi32_crypt.cpp
+index 8001be5..c68dce6 100644
+--- a/platforms/win32/src/win32/advapi32_crypt.cpp
++++ b/platforms/win32/src/win32/advapi32_crypt.cpp
+@@ -8,6 +8,9 @@
+ // provider's salted 40-bit keys are not).
+ 
+ #include <array>
++#include <atomic>
++#include <cstdio>
++#include <cstdlib>
+ #include <map>
+ #include <memory>
+ #include <mutex>
+@@ -225,6 +228,20 @@ HLE64("advapi32.dll", CryptDestroyKey, 1) {
+ }
+ 
+ namespace {
++// RECOMP_CRYPT_DUMP=<dir>: write the plaintext of every CryptEncrypt and
++// CryptDecrypt call to <dir>/crypt-<n>-<enc|dec>-<len>.bin (debugging).
++void DumpPlain(bool encrypt, const uint8_t* p, uint32_t n) {
++  static const char* dir = std::getenv("RECOMP_CRYPT_DUMP");
++  static std::atomic<int> seq{0};
++  if (!dir || !*dir || !p) return;
++  char name[512];
++  std::snprintf(name, sizeof name, "%s/crypt-%03d-%s-%u.bin", dir, seq++, encrypt ? "enc" : "dec", n);
++  if (FILE* f = std::fopen(name, "wb")) {
++    std::fwrite(p, 1, n, f);
++    std::fclose(f);
++  }
++}
++
+ // The stream cipher's work for both directions: the data is transformed in
+ // place and keeps its length. A hash handle receives the plaintext. The
+ // last block of a message returns the key to its initial state.
+@@ -249,8 +266,10 @@ uint64_t Cipher(Ctx& c, bool encrypt) {
+     return Fail(kErrorInvalidParameter);
+   }
+   uint8_t* p = n ? GPtr(data) : nullptr;
++  if (encrypt && n) DumpPlain(true, p, n);
+   if (hash && encrypt && n) hash->md5.Update(p, n);
+   if (n) key->rc4.Apply(p, n);
++  if (!encrypt && n) DumpPlain(false, p, n);
+   if (hash && !encrypt && n) hash->md5.Update(p, n);
+   if (uint32_t(Arg(c, 2))) key->Reset();
+   return 1;
+-- 
+2.51.0.windows.1
+

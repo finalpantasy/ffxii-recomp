@@ -1,0 +1,293 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: finalpantasy <finalpantasy@users.noreply.github.com>
+Date: Sun, 22 Nov 2026 10:54:17 -0500
+Subject: [PATCH 15/34] d3d11 interp: blend uploads in place, keep map shadows
+ instead of mirror copies
+
+BlendWords is branchless and vectorizes; constant-buffer maps blend straight
+into the blend context's mapping; the guest shadow of each dynamic buffer's
+last map is kept for NO_OVERWRITE refills and the prefill instead of being
+copied into a mirror.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ platforms/win32/src/win32/d3d11.cpp | 138 +++++++++++++++++-----------
+ platforms/win32/src/win32/dxvk.h    |   1 -
+ 2 files changed, 85 insertions(+), 54 deletions(-)
+
+diff --git a/platforms/win32/src/win32/d3d11.cpp b/platforms/win32/src/win32/d3d11.cpp
+index 073ed0a..935ecbd 100644
+--- a/platforms/win32/src/win32/d3d11.cpp
++++ b/platforms/win32/src/win32/d3d11.cpp
+@@ -51,7 +51,7 @@ struct Recorder {
+ #ifdef _WIN32
+   ID3D11InfoQueue* info = nullptr;  // FFXII_D3D_DEBUG
+ #endif
+-  uint64_t prefills = 0, prefill_bytes = 0;  // buffers written into blend lists up front
++  uint64_t prefills = 0, prefill_bytes = 0, blend_bytes = 0;  // buffers written into blend lists up front
+   uint64_t sync_why[4] = {};
+   uint64_t syncs = 0, frames = 0, blended = 0, kept = 0, map_fails = 0;
+   std::vector<std::vector<uint8_t>> prev, cur;  // constant-buffer uploads in order
+@@ -59,12 +59,15 @@ struct Recorder {
+ };
+ Recorder g_rec;
+ 
+-// A deferred context sees a dynamic buffer's contents only after a DISCARD map
+-// in the same command list. Buffers the game writes once (a fullscreen quad,
+-// menu text) and draws every frame are therefore written into each blend list
+-// up front from their last contents.
++// Each dynamic buffer's last contents while recording: the guest shadow of its
++// last map, kept instead of freed (no copy). A NO_OVERWRITE map on a deferred
++// context starts from it. A deferred context also sees a dynamic buffer only
++// after a DISCARD map in the same command list, so buffers the game writes
++// once (a fullscreen quad, menu text) and draws every frame are written into
++// each blend list up front from it.
+ struct DynamicBuffer {
+-  std::vector<uint8_t> bytes;
++  gaddr data = 0;
++  size_t size = 0;
+   uint64_t list = 0;  // the last list that mapped it
+ };
+ std::unordered_map<ID3D11Resource*, DynamicBuffer> g_dyn;
+@@ -97,14 +100,41 @@ ContextSet RecordContexts(gaddr guest) {
+ // The blended copy of a constant-buffer upload, for the second context:
+ // 32-bit words that are normal floats in both frames and differ are set
+ // halfway; everything else (integers, flags, new data) keeps this frame's.
+-const void* BlendUpload(const void* data, size_t size) {
++// Blends 32-bit words a -> b at t into dst. A word is blended when both
++// values are normal floats below 2^24 in magnitude; integers, flags, zeros
++// and huge values keep this frame's. Branchless, so the loop vectorizes.
++void BlendWords(uint8_t* dst, const uint8_t* a, const uint8_t* b, size_t size, float t) {
++  const size_t n = size / 4;
++  for (size_t i = 0; i < n; ++i) {
++    uint32_t ua, ub;
++    std::memcpy(&ua, a + i * 4, 4);
++    std::memcpy(&ub, b + i * 4, 4);
++    const uint32_t ea = (ua >> 23) & 0xFFu, eb = (ub >> 23) & 0xFFu;
++    const bool ok = (ea - 1u) < 150u && (eb - 1u) < 150u;
++    float fa, fb;
++    std::memcpy(&fa, &ua, 4);
++    std::memcpy(&fb, &ub, 4);
++    const float m = fa + (fb - fa) * t;
++    uint32_t um;
++    std::memcpy(&um, &m, 4);
++    const uint32_t out = ok ? um : ub;
++    std::memcpy(dst + i * 4, &out, 4);
++  }
++  if (size % 4) std::memcpy(dst + n * 4, b + n * 4, size % 4);
++}
++
++// The blended copy of a constant-buffer upload, written to dst; uploads are
++// matched to the previous frame's by order.
++void BlendUploadInto(void* dst, const void* data, size_t size) {
+   if (g_rec.cur.size() <= g_rec.cur_n) g_rec.cur.resize(g_rec.cur_n + 1);
+   std::vector<uint8_t>& out = g_rec.cur[g_rec.cur_n];
+   const size_t k = g_rec.cur_n++;
++  g_rec.blend_bytes += size;
+   out.assign(static_cast<const uint8_t*>(data), static_cast<const uint8_t*>(data) + size);
+   if (k >= g_rec.prev.size() || g_rec.prev[k].size() != size) {
+     ++g_rec.kept;
+-    return data;
++    std::memcpy(dst, data, size);
++    return;
+   }
+   ++g_rec.blended;
+   // FFXII_D3D_INTERP_T: where between the frames (0.5 default; 1 repeats this one).
+@@ -112,18 +142,13 @@ const void* BlendUpload(const void* data, size_t size) {
+     const char* v = Env("D3D_INTERP_T");
+     return v ? float(std::atof(v)) : 0.5f;
+   }();
++  BlendWords(static_cast<uint8_t*>(dst), g_rec.prev[k].data(), out.data(), size, t);
++}
++
++const void* BlendUpload(const void* data, size_t size) {
+   static thread_local std::vector<uint8_t> mid;
+-  mid = out;
+-  const uint8_t* old = g_rec.prev[k].data();
+-  for (size_t i = 0; i + 4 <= size; i += 4) {
+-    float a, b;
+-    std::memcpy(&a, old + i, 4);
+-    std::memcpy(&b, mid.data() + i, 4);
+-    if (a == b || !std::isnormal(a) || !std::isnormal(b)) continue;
+-    if (std::fabs(a) > 1e7f || std::fabs(b) > 1e7f) continue;
+-    const float m = a + (b - a) * t;
+-    std::memcpy(mid.data() + i, &m, 4);
+-  }
++  mid.resize(size);
++  BlendUploadInto(mid.data(), data, size);
+   return mid.data();
+ }
+ 
+@@ -549,27 +574,28 @@ void CountMap(ID3D11Resource* resource, D3D11_MAP type) {
+   static const bool on = std::getenv("RECOMP_D3D_MAP_STATS") != nullptr;
+   if (!on) return;
+   static std::mutex mu;
+-  static std::map<std::tuple<int, uint32_t, int>, uint64_t> counts;
++  static std::map<std::tuple<int, uint32_t, int, uint32_t>, uint64_t> counts;
+   static uint64_t total = 0;
+   D3D11_RESOURCE_DIMENSION dim = D3D11_RESOURCE_DIMENSION_UNKNOWN;
+   resource->GetType(&dim);
+-  uint32_t bind = 0;
++  uint32_t bind = 0, width = 0;
+   if (dim == D3D11_RESOURCE_DIMENSION_BUFFER) {
+     D3D11_BUFFER_DESC desc{};
+     static_cast<ID3D11Buffer*>(resource)->GetDesc(&desc);
+     bind = desc.BindFlags;
++    width = desc.ByteWidth;
+   } else if (dim == D3D11_RESOURCE_DIMENSION_TEXTURE2D) {
+     D3D11_TEXTURE2D_DESC desc{};
+     static_cast<ID3D11Texture2D*>(resource)->GetDesc(&desc);
+     bind = desc.BindFlags;
+   }
+   std::lock_guard<std::mutex> lock(mu);
+-  ++counts[{int(dim), bind, int(type)}];
++  ++counts[{int(dim), bind, int(type), width}];
+   if (++total % 20000) return;
+   std::fprintf(stderr, "[d3d11] maps so far %llu:", (unsigned long long)total);
+   for (auto& [k, n] : counts)
+-    std::fprintf(stderr, " dim%d/bind0x%x/type%d=%llu", std::get<0>(k), std::get<1>(k),
+-                 std::get<2>(k), (unsigned long long)n);
++    std::fprintf(stderr, " dim%d/bind0x%x/type%d/w%u=%llu", std::get<0>(k), std::get<1>(k),
++                 std::get<2>(k), std::get<3>(k), (unsigned long long)n);
+   std::fprintf(stderr, "\n");
+ }
+ 
+@@ -618,9 +644,10 @@ uint32_t Map(Ctx& c) {
+   // writes one slice and the rest is still queued for earlier draws.
+   if (type != D3D11_MAP_WRITE_DISCARD) {
+     if (deferred) {
+-      // A deferred map's memory is not the buffer's; start from the mirror.
+-      const size_t n = std::min(size, object->mirror.size());
+-      if (n) std::memcpy(GPtr(shadow), object->mirror.data(), n);
++      // A deferred map's memory is not the buffer's; start from its last contents.
++      auto last = g_dyn.find(resource);
++      const size_t n = last == g_dyn.end() ? 0 : std::min(size, last->second.size);
++      if (n) std::memcpy(GPtr(shadow), GPtr(last->second.data), n);
+     } else {
+       std::memcpy(GPtr(shadow), mapped.pData, size);
+     }
+@@ -674,26 +701,27 @@ uint32_t Unmap(Ctx& c) {
+   if (it != object->mappings.end()) {
+     const DxvkMapping mapping = it->second;
+     bool to_blend = false;
++    bool keep_shadow = false;
+     if (mapping.type != D3D11_MAP_READ) {
+       std::memcpy(mapping.host_data, GPtr(mapping.guest_data), mapping.size);
+       D3D11_RESOURCE_DIMENSION dim = D3D11_RESOURCE_DIMENSION_UNKNOWN;
+       if (g_rec.deferred) resource->GetType(&dim);
+       if (dim == D3D11_RESOURCE_DIMENSION_BUFFER && (mapping.type == D3D11_MAP_WRITE_DISCARD ||
+                                                      mapping.type == D3D11_MAP_WRITE_NO_OVERWRITE)) {
+-        const uint8_t* g = GPtr(mapping.guest_data);
+-        object->mirror.assign(g, g + mapping.size);
+-        if (g_rec.blend) {
+-          auto [it2, fresh] = g_dyn.try_emplace(resource);
+-          if (fresh) resource->AddRef();
+-          it2->second.bytes.assign(g, g + mapping.size);
+-          it2->second.list = g_rec.list;
+-        }
++        auto [it2, fresh] = g_dyn.try_emplace(resource);
++        if (fresh) resource->AddRef();
++        if (it2->second.data) HeapFreeProcess(it2->second.data);
++        it2->second.data = mapping.guest_data;
++        it2->second.size = mapping.size;
++        it2->second.list = g_rec.list;
++        keep_shadow = true;
+       }
+       if (mapping.blend_data) {
+         const void* src = GPtr(mapping.guest_data);
+         if (dim == D3D11_RESOURCE_DIMENSION_BUFFER && IsConstantBuffer(resource))
+-          src = BlendUpload(src, mapping.size);
+-        std::memcpy(mapping.blend_data, src, mapping.size);
++          BlendUploadInto(mapping.blend_data, src, mapping.size);
++        else
++          std::memcpy(mapping.blend_data, src, mapping.size);
+         to_blend = true;
+       }
+       D3D11_BUFFER_DESC desc{};
+@@ -704,7 +732,7 @@ uint32_t Unmap(Ctx& c) {
+     object->mappings.erase(it);
+     context->Unmap(resource, subresource);
+     if (to_blend) g_rec.blend->Unmap(resource, subresource);
+-    HeapFreeProcess(mapping.guest_data);
++    if (!keep_shadow) HeapFreeProcess(mapping.guest_data);
+   } else {
+     context->Unmap(resource, subresource);
+   }
+@@ -756,36 +784,27 @@ ID3D11CommandList* D3d11FinishBlended(bool* show) {
+   HRESULT hr = g_rec.blend->FinishCommandList(TRUE, &list);
+   // Buffers mapped in the frame just recorded are mapped again in the next;
+   // the rest start the next blend list with their contents.
+-  const bool sweep = g_rec.frames % 600 == 599;
+-  for (auto it = g_dyn.begin(); it != g_dyn.end();) {
++  for (auto it = g_dyn.begin(); it != g_dyn.end(); ++it) {
+     ID3D11Resource* res = it->first;
+-    if (sweep) {
+-      res->AddRef();
+-      if (res->Release() == 1) {  // only this table holds it
+-        res->Release();
+-        it = g_dyn.erase(it);
+-        continue;
+-      }
+-    }
+     if (it->second.list != g_rec.list) {
+       D3D11_MAPPED_SUBRESOURCE bm{};
+       if (SUCCEEDED(g_rec.blend->Map(res, 0, D3D11_MAP_WRITE_DISCARD, 0, &bm))) {
+-        std::memcpy(bm.pData, it->second.bytes.data(), it->second.bytes.size());
++        std::memcpy(bm.pData, GPtr(it->second.data), it->second.size);
+         g_rec.blend->Unmap(res, 0);
+-        g_rec.prefill_bytes += it->second.bytes.size();
++        g_rec.prefill_bytes += it->second.size;
+         ++g_rec.prefills;
+       }
+     }
+-    ++it;
+   }
+   g_rec.prev.swap(g_rec.cur);
+   g_rec.prev.resize(g_rec.cur_n);
+   g_rec.cur_n = 0;
+   g_rec.blend_ok = true;
+   if (++g_rec.frames % 600 == 0)
+-    std::fprintf(stderr, "[d3d11] interp: %llu frames, %llu mid-frame syncs, uploads %llu blended %llu kept\n",
++    std::fprintf(stderr, "[d3d11] interp: %llu frames, %llu mid-frame syncs, uploads %llu blended %llu kept, %llu KB\n",
+                  (unsigned long long)g_rec.frames, (unsigned long long)g_rec.syncs,
+-                 (unsigned long long)g_rec.blended, (unsigned long long)g_rec.kept);
++                 (unsigned long long)g_rec.blended, (unsigned long long)g_rec.kept,
++                 (unsigned long long)(g_rec.blend_bytes >> 10));
+   if (g_rec.frames % 600 == 0)
+     std::fprintf(stderr, "[d3d11] syncs: map %llu flush %llu getdata %llu\n",
+                  (unsigned long long)g_rec.sync_why[0], (unsigned long long)g_rec.sync_why[1],
+@@ -810,6 +829,19 @@ bool D3d11ExecuteBlended() {
+ 
+ ID3D11CommandList* D3d11FinishMain() {
+   if (!g_rec.deferred) return nullptr;
++  // Every 600 lists, drop buffers only this table still holds.
++  if (g_rec.list % 600 == 0) {
++    for (auto it = g_dyn.begin(); it != g_dyn.end();) {
++      it->first->AddRef();
++      if (it->first->Release() == 1) {
++        it->first->Release();
++        if (it->second.data) HeapFreeProcess(it->second.data);
++        it = g_dyn.erase(it);
++      } else {
++        ++it;
++      }
++    }
++  }
+   ID3D11CommandList* list = nullptr;
+   HRESULT hr = g_rec.deferred->FinishCommandList(TRUE, &list);
+   ++g_rec.list;
+diff --git a/platforms/win32/src/win32/dxvk.h b/platforms/win32/src/win32/dxvk.h
+index bd3ea50..76c6156 100644
+--- a/platforms/win32/src/win32/dxvk.h
++++ b/platforms/win32/src/win32/dxvk.h
+@@ -23,7 +23,6 @@ struct DxvkObject : com::Object {
+   std::map<uint32_t, DxvkMapping> mappings;
+   // Frame recording: the last full contents of a dynamic buffer, and the
+   // command list (serial) in which it was last mapped with WRITE_DISCARD.
+-  std::vector<uint8_t> mirror;
+   uint64_t discard_list = 0;
+   uint64_t blend_discard_list = 0;  // the same for the interpolation context
+ 
+-- 
+2.51.0.windows.1
+

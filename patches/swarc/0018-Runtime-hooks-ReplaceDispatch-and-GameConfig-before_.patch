@@ -1,0 +1,98 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: finalpantasy <finalpantasy@users.noreply.github.com>
+Date: Sun, 22 Nov 2026 12:38:12 -0500
+Subject: [PATCH 18/34] Runtime hooks: ReplaceDispatch and
+ GameConfig::before_entry
+
+ReplaceDispatch(va, fn) swaps the dispatcher's entry for a lifted
+function and returns the previous one, so a game project can hook every
+indirect call to it (function pointers, vtables, callbacks, CallGuest).
+before_entry runs once dispatch is set up, before the guest entry point:
+the place to load native mod modules. RegisterClassW logs the class and
+its window procedure.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ platforms/win32/src/win32/process.cpp       |  1 +
+ platforms/win32/src/win32/user32_window.cpp |  2 ++
+ src/x86/dispatch.cpp                        | 10 ++++++++++
+ src/x86/runtime.h                           | 10 ++++++++++
+ 4 files changed, 23 insertions(+)
+
+diff --git a/platforms/win32/src/win32/process.cpp b/platforms/win32/src/win32/process.cpp
+index b308c92..55a2c82 100644
+--- a/platforms/win32/src/win32/process.cpp
++++ b/platforms/win32/src/win32/process.cpp
+@@ -248,6 +248,7 @@ int RunProcess(const win32::GameConfig& game, const std::string& exe_path,
+              (unsigned long long)m.img.entry);
+   }
+   InitKernel32State();
++  if (game.before_entry) game.before_entry();
+ 
+   Thread* main = CreateGuestThread(w.img.stack_reserve);
+   RegisterMainThread(main);
+diff --git a/platforms/win32/src/win32/user32_window.cpp b/platforms/win32/src/win32/user32_window.cpp
+index 5846b1f..71a1c76 100644
+--- a/platforms/win32/src/win32/user32_window.cpp
++++ b/platforms/win32/src/win32/user32_window.cpp
+@@ -1417,6 +1417,8 @@ HLE64("user32.dll", RegisterClassW, 1) {
+   k.wndproc = Rd64(wc + 8);
+   k.wnd_extra = Rd32(wc + 20);
+   k.name = ClassKeyW(Rd64(wc + 64));
++  std::fprintf(stderr, "[user32] RegisterClassW %s wndproc %08llX\n", k.name.c_str(),
++               (unsigned long long)k.wndproc);
+   std::lock_guard<std::recursive_mutex> l(g_mu);
+   if (g_classes.count(k.name)) {
+     SetLastError(kErrorClassAlreadyExists);
+diff --git a/src/x86/dispatch.cpp b/src/x86/dispatch.cpp
+index a90a82f..0a2deea 100644
+--- a/src/x86/dispatch.cpp
++++ b/src/x86/dispatch.cpp
+@@ -450,6 +450,16 @@ bool IsLifted(gaddr va) {
+   return r && r->table[va - r->lo];
+ }
+ 
++GuestFn ReplaceDispatch(gaddr va, GuestFn fn) {
++  CodeRange* r = va - g_exe.lo < g_exe.size ? &g_exe : nullptr;
++  for (CodeRange& d : g_dlls)
++    if (!r && va - d.lo < d.size) r = &d;
++  if (!r || !r->table[va - r->lo] || !fn) return nullptr;
++  GuestFn prev = r->table[va - r->lo];
++  r->table[va - r->lo] = fn;
++  return prev;
++}
++
+ void Dispatch(Ctx& c, uint64_t target, uint64_t va) {
+   const CodeRange* r = &g_exe;
+   if (target - r->lo >= r->size) {
+diff --git a/src/x86/runtime.h b/src/x86/runtime.h
+index 0524460..ecc93e6 100644
+--- a/src/x86/runtime.h
++++ b/src/x86/runtime.h
+@@ -25,6 +25,9 @@ struct GameConfig {
+   // $XDG_DATA_HOME/<id>, and dev/test switches are read from environment
+   // variables named <ID>_<SWITCH> (GAME_TRACE, ...; runtime/env.h).
+   std::string id;
++  // Optional: runs once the images are mapped and dispatch is set up,
++  // before the guest's entry point (native mod loaders).
++  void (*before_entry)() = nullptr;
+ };
+ 
+ // Processors reported to the game (PEB, GetSystemInfo): never 1. Games
+@@ -157,6 +160,13 @@ uint32_t RunMainThreadBeside(Thread* t, const std::function<uint64_t(Ctx&)>& bod
+ // Whether va is the entry of a lifted function in Process::code (once
+ // InitDispatch has run).
+ bool IsLifted(gaddr va);
++// Makes Dispatch (every indirect call and jump: function pointers,
++// vtables, callbacks, CallGuest) run fn for the lifted function at va, and
++// returns what ran there before (to call through), or null when va is not
++// a lifted entry (nothing changes). Direct calls between lifted functions
++// do not go through Dispatch and still reach the lifted body. Call before
++// guest threads start (GameConfig::before_entry).
++void (*ReplaceDispatch(gaddr va, void (*fn)(Ctx&)))(Ctx&);
+ 
+ // Per-user data directory: $XDG_DATA_HOME/<id>, else ~/.local/share/<id>
+ // (~/Library/Application Support/<id> on macOS) (settings, saves, the guest's C: drive, crash and hang reports).
+-- 
+2.51.0.windows.1
+

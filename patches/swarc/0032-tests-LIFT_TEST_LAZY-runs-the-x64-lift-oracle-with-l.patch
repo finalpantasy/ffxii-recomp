@@ -1,0 +1,48 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: finalpantasy <finalpantasy@users.noreply.github.com>
+Date: Sat, 28 Nov 2026 00:29:09 -0500
+Subject: [PATCH 32/34] tests: LIFT_TEST_LAZY runs the x64 lift oracle with
+ lazy SSE flags
+
+The oracle never turned g_lazy_flags on, so the lazy-mode paths that
+ffxii_recomp runs by default (inline Arith, Sqrt, MinMax, Comi and the
+conversions under LZ) were not compared against hardware. With
+LIFT_TEST_LAZY=1 they are, for every trial whose MXCSR has the default
+control; the sticky exception bits are left out of the MXCSR compare in
+that mode, because lazy flags do not keep them by design.
+
+FFXII lift_sse64_test 300 with LIFT_TEST_LAZY=1: 6589 forms, 0 failed.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ tests/x86/lift_x64_test.cpp | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/tests/x86/lift_x64_test.cpp b/tests/x86/lift_x64_test.cpp
+index f7ff0c7..b9de4d2 100644
+--- a/tests/x86/lift_x64_test.cpp
++++ b/tests/x86/lift_x64_test.cpp
+@@ -326,6 +326,9 @@ int main(int argc, char** argv) {
+ #endif
+   int trials = argc > 1 ? std::atoi(argv[1]) : sse ? 2000 : 300;
+   const char* only = argc > 2 ? argv[2] : nullptr;
++  // LIFT_TEST_LAZY=1 runs the forms with lazy SSE flags on, as ffxii_recomp does
++  // (it takes effect only for the trials whose MXCSR is the default control).
++  if (std::getenv("LIFT_TEST_LAZY")) recomp::sse::g_lazy_flags = recomp::sse::kNativeSse;
+   const uint32_t kBuf = uint32_t(kFormTarget - 0x1000);
+   const uint64_t seg_base = kFormTarget - kFormSegOffset;
+   // fs: operands run natively as gs: (fs is the C library's).
+@@ -495,7 +498,9 @@ int main(int argc, char** argv) {
+       for (int i = 0; i < 16; i++)
+         if (std::memcmp(c.ymm_hi[i].b, hw.ymm_hi[i], 16)) why += " ymm_hi" + std::to_string(i);
+ #endif
+-      if (c.mxcsr != hw.mxcsr) why += " mxcsr";
++      // Lazy flags leave the sticky exception bits alone by design.
++      const uint32_t mx_mask = recomp::sse::g_lazy_flags ? ~0x3Fu : ~0u;
++      if ((c.mxcsr ^ hw.mxcsr) & mx_mask) why += " mxcsr";
+       if (std::memcmp(native_buf, mem.ptr(kBuf), kBufSize)) why += " mem";
+       if (std::memcmp(page + kRipData, mem.ptr(rip_va), kRipBytes)) why += " rip mem";
+       if (why.empty()) continue;
+-- 
+2.51.0.windows.1
+

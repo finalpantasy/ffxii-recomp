@@ -1,0 +1,60 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: finalpantasy <finalpantasy@users.noreply.github.com>
+Date: Mon, 23 Nov 2026 12:28:08 -0500
+Subject: [PATCH 23/34] Test pad: hold each scripted press until the game has
+ read it twice
+
+At 4-7 fps a short scripted press could go down and up between two XInput
+polls and be lost, which made menu scripts land on different items run to
+run. New presses now stay reported until GetTestPad has served them twice.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ platforms/win32/src/win32/user32_window.cpp | 19 ++++++++++++++++++-
+ 1 file changed, 18 insertions(+), 1 deletion(-)
+
+diff --git a/platforms/win32/src/win32/user32_window.cpp b/platforms/win32/src/win32/user32_window.cpp
+index 43d14c8..e8006fd 100644
+--- a/platforms/win32/src/win32/user32_window.cpp
++++ b/platforms/win32/src/win32/user32_window.cpp
+@@ -2822,11 +2822,22 @@ namespace {
+ std::mutex g_test_pad_mu;
+ bool g_test_pad_on = false;
+ TestPadState g_test_pad;
++// Buttons pressed since the game last saw them: a press stays reported until
++// the game has read it kSeenReads times, even if the script already let go.
++// At a low frame rate a short press can otherwise go down and up between two
++// of the game's polls and be lost (menu presses dropped at 4-7 fps).
++constexpr int kSeenReads = 2;
++uint16_t g_test_pad_latch = 0;
++uint8_t g_test_pad_seen[16] = {};
+ }  // namespace
+ 
+ void SetTestPad(const TestPadState& state) {
+   std::lock_guard<std::mutex> l(g_test_pad_mu);
+   g_test_pad_on = true;
++  const uint16_t pressed = state.buttons & ~g_test_pad.buttons;
++  for (int b = 0; b < 16; b++)
++    if (pressed & (1u << b)) g_test_pad_seen[b] = 0;
++  g_test_pad_latch |= pressed;
+   g_test_pad = state;
+ }
+ 
+@@ -2852,7 +2863,13 @@ bool GetTestPad(TestPadState* out) {
+         std::fclose(f);
+       }
+   }
+-  if (out) *out = g_test_pad;
++  if (out) {
++    *out = g_test_pad;
++    out->buttons |= g_test_pad_latch;
++    for (int b = 0; b < 16; b++)
++      if ((g_test_pad_latch & (1u << b)) && ++g_test_pad_seen[b] >= kSeenReads)
++        g_test_pad_latch &= uint16_t(~(1u << b));
++  }
+   return g_test_pad_on;
+ }
+ 
+-- 
+2.51.0.windows.1
+

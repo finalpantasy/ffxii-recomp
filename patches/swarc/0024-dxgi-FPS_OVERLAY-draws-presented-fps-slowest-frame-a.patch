@@ -1,0 +1,170 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: finalpantasy <finalpantasy@users.noreply.github.com>
+Date: Thu, 26 Nov 2026 10:18:33 -0500
+Subject: [PATCH 24/34] dxgi: FPS_OVERLAY draws presented fps, slowest frame
+ and a game value with ClearView
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ platforms/win32/src/win32/dxgi.cpp | 114 +++++++++++++++++++++++++++++
+ 1 file changed, 114 insertions(+)
+
+diff --git a/platforms/win32/src/win32/dxgi.cpp b/platforms/win32/src/win32/dxgi.cpp
+index 9d76b81..fbc2846 100644
+--- a/platforms/win32/src/win32/dxgi.cpp
++++ b/platforms/win32/src/win32/dxgi.cpp
+@@ -10,6 +10,7 @@
+ #include <vector>
+ 
+ #include <d3d11.h>
++#include <d3d11_1.h>
+ #include <dxgi.h>
+ 
+ #include "runtime/env.h"
+@@ -494,6 +495,115 @@ void DumpFrame(IDXGISwapChain* swap) {
+   back->Release();
+ }
+ 
++// <ID>_FPS_OVERLAY=1 (FFXII: --fps-overlay): draws the presented frame rate
++// in the top-left corner of every real present, measured on the host right
++// before swap->Present. Line 1 (white): frames presented in the last 0.5 s,
++// divided by the time they spanned. Line 2 (yellow): the rate of the slowest
++// frame in the last second (1000 ms / longest present-to-present interval).
++// Line 3 (cyan, when the game sets g_fps_overlay_extra): a value from the
++// game, for FFXII the 1/60 s game ticks per second, which is 60 at normal
++// speed. Digits are rectangles drawn with ClearView, so no pipeline state
++// changes.
++double (*g_fps_overlay_extra)() = nullptr;
++namespace {
++struct FpsOverlay {
++  std::vector<int64_t> stamps;  // present times in ns, last ~1 s
++  int64_t last_update = 0;
++  double fps = 0, low = 0, extra = -1;
++  bool warned = false;
++};
++FpsOverlay g_fpso;
++
++void AddDigit(std::vector<D3D11_RECT>& r, int x, int y, int u, int digit) {
++  // Seven segments a-g on a 5 x 9 grid, 1 unit thick.
++  static const int seg[7][4] = {{0, 0, 5, 1}, {4, 0, 5, 5}, {4, 4, 5, 9}, {0, 8, 5, 9},
++                                {0, 4, 1, 9}, {0, 0, 1, 5}, {0, 4, 5, 5}};
++  static const uint8_t mask[10] = {0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F};
++  for (int k = 0; k < 7; k++)
++    if (mask[digit] >> k & 1)
++      r.push_back({LONG(x + seg[k][0] * u), LONG(y + seg[k][1] * u), LONG(x + seg[k][2] * u),
++                   LONG(y + seg[k][3] * u)});
++}
++
++void AddNumber(std::vector<D3D11_RECT>& r, int x, int y, int u, double v, int decimals) {
++  char buf[32];
++  std::snprintf(buf, sizeof buf, "%.*f", decimals, v < 0 ? 0.0 : v);
++  for (const char* p = buf; *p; p++) {
++    if (*p == '.') {
++      r.push_back({LONG(x), LONG(y + 8 * u), LONG(x + u), LONG(y + 9 * u)});
++      x += 2 * u;
++    } else {
++      AddDigit(r, x, y, u, *p - '0');
++      x += 7 * u;
++    }
++  }
++}
++
++void FpsOverlayDraw(IDXGISwapChain* swap) {
++  static const bool on = [] {
++    const char* v = Env("FPS_OVERLAY");
++    return v && *v && *v != '0';
++  }();
++  if (!on) return;
++  FpsOverlay& o = g_fpso;
++  const int64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(
++                          std::chrono::steady_clock::now().time_since_epoch()).count();
++  o.stamps.push_back(now);
++  while (o.stamps.size() > 1 && now - o.stamps.front() > 1'000'000'000) o.stamps.erase(o.stamps.begin());
++  if (now - o.last_update >= 500'000'000) {
++    o.last_update = now;
++    // Average over the frames of the last 0.5 s: (n - 1) intervals over their span.
++    size_t i = o.stamps.size();
++    while (i > 1 && now - o.stamps[i - 2] <= 500'000'000) i--;
++    const size_t first = i - 1, n = o.stamps.size() - first;
++    o.fps = n > 1 ? double(n - 1) * 1e9 / double(now - o.stamps[first]) : 0;
++    int64_t worst = 0;
++    for (size_t k = 1; k < o.stamps.size(); k++) worst = std::max(worst, o.stamps[k] - o.stamps[k - 1]);
++    o.low = worst > 0 ? 1e9 / double(worst) : 0;
++    o.extra = g_fps_overlay_extra ? g_fps_overlay_extra() : -1;
++  }
++  ID3D11Texture2D* back = nullptr;
++  if (FAILED(swap->GetBuffer(0, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&back))) || !back) return;
++  ID3D11Device* dev = nullptr;
++  back->GetDevice(&dev);
++  ID3D11DeviceContext* ctx = nullptr;
++  dev->GetImmediateContext(&ctx);
++  ID3D11DeviceContext1* ctx1 = nullptr;
++  ctx->QueryInterface(__uuidof(ID3D11DeviceContext1), reinterpret_cast<void**>(&ctx1));
++  ID3D11RenderTargetView* rtv = nullptr;
++  D3D11_TEXTURE2D_DESC d;
++  back->GetDesc(&d);
++  if (ctx1 && SUCCEEDED(dev->CreateRenderTargetView(back, nullptr, &rtv)) && rtv) {
++    const int u = std::max(2, int(d.Height / 270));  // segment unit: 4 px at 1080p
++    const int x0 = 2 * u, y0 = 2 * u, line = 12 * u;
++    const int lines = o.extra >= 0 ? 3 : 2;
++    std::vector<D3D11_RECT> bg = {{0, 0, LONG(x0 + 7 * u * 6 + 2 * u), LONG(y0 + line * lines)}};
++    const float black[4] = {0, 0, 0, 1}, white[4] = {1, 1, 1, 1}, yellow[4] = {1, 0.85f, 0.2f, 1},
++                cyan[4] = {0.3f, 0.9f, 1, 1};
++    ctx1->ClearView(rtv, black, bg.data(), UINT(bg.size()));
++    std::vector<D3D11_RECT> r;
++    AddNumber(r, x0, y0, u, o.fps, 1);
++    ctx1->ClearView(rtv, white, r.data(), UINT(r.size()));
++    r.clear();
++    AddNumber(r, x0, y0 + line, u, o.low, 0);
++    ctx1->ClearView(rtv, yellow, r.data(), UINT(r.size()));
++    if (lines == 3) {
++      r.clear();
++      AddNumber(r, x0, y0 + 2 * line, u, o.extra, 1);
++      ctx1->ClearView(rtv, cyan, r.data(), UINT(r.size()));
++    }
++  } else if (!o.warned) {
++    o.warned = true;
++    std::fprintf(stderr, "[dxgi] fps overlay: no ID3D11DeviceContext1 or render target view; not drawn\n");
++  }
++  if (rtv) rtv->Release();
++  if (ctx1) ctx1->Release();
++  ctx->Release();
++  dev->Release();
++  back->Release();
++}
++}  // namespace
++
+ namespace {
+ // Interpolated frames are paced by a presenter thread: it shows the blended
+ // frame when the game presents, then the real frame half a frame interval
+@@ -542,6 +652,7 @@ void PresenterLoop() {
+       std::lock_guard<std::recursive_mutex> imm(D3d11ImmediateLock());
+       D3d11Execute(blend);
+       if (show) {
++        FpsOverlayDraw(swap);
+         if (dump_blend) DumpFrame(swap);
+         swap->Present(0, flags);
+       }
+@@ -555,6 +666,7 @@ void PresenterLoop() {
+     {
+       std::lock_guard<std::recursive_mutex> imm(D3d11ImmediateLock());
+       D3d11Execute(main);
++      FpsOverlayDraw(swap);
+       if (!dump_blend) DumpFrame(swap);
+       swap->Present(interval, flags);
+     }
+@@ -635,9 +747,11 @@ HLE_NAMED_X(kDll, "IDXGISwapChain::Present", DxgiSwapPresent, kCdecl, true) {
+   }
+   if (D3d11ExecuteBlended()) {
+     if (dump_blend) DumpFrame(swap);
++    FpsOverlayDraw(swap);
+     swap->Present(0, uint32_t(Arg(c, 2)));
+   }
+   D3d11FlushRecorded();
++  FpsOverlayDraw(swap);
+   if (!dump_blend) DumpFrame(swap);
+   return uint32_t(swap->Present(uint32_t(Arg(c, 1)), uint32_t(Arg(c, 2))));
+ }
+-- 
+2.51.0.windows.1
+

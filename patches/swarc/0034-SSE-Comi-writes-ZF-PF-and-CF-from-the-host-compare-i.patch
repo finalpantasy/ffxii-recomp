@@ -1,0 +1,89 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: finalpantasy <finalpantasy@users.noreply.github.com>
+Date: Sat, 28 Nov 2026 01:19:04 -0500
+Subject: [PATCH 34/34] SSE: Comi writes ZF, PF and CF from the host compare in
+ lazy mode
+
+Under the lazy-SSE local, comiss, ucomiss, comisd and ucomisd run
+ucomiss or ucomisd on the host and take ZF, PF and CF straight from
+the host flags through asm flag outputs, instead of returning a 0-3
+code that the emitted code turned back into three flags. COMIS and
+UCOMIS differ only in raising invalid on a quiet NaN, which lazy mode
+masks and does not record. Out of lazy mode the exact ComiOol path
+still runs. The emitter now passes F.zf, F.pf and F.cf to Comi.
+
+FFXII relift: 63,319 sites. ctest 59/59; lift_int64_test and
+lift_sse64_test 300 (native, LIFT_TEST_LAZY=1, RECOMP_SOFT_SSE=1)
+0 failed.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/x86/sse.h             | 36 ++++++++++++++++++++++++++++++++++++
+ tools/lifter_x86/emit.cpp |  3 +--
+ 2 files changed, 37 insertions(+), 2 deletions(-)
+
+diff --git a/src/x86/sse.h b/src/x86/sse.h
+index adc3e34..748a4f5 100644
+--- a/src/x86/sse.h
++++ b/src/x86/sse.h
+@@ -648,6 +648,42 @@ inline void ShufPd(Xmm& d, const Xmm& s, uint8_t imm) {
+                                        uint8_t pred, uint64_t va) {
+   RECOMP_SSE_DS(CmpOol(c, dbl, lanes, td, ts, pred, va));
+ }
++// COMIS/UCOMIS straight into the guest flags. Under lazy flags every SSE
++// exception is masked, so COMIS and UCOMIS differ in nothing observable and
++// the host's UCOMIS gives exactly the guest's ZF/PF/CF (greater 000, less
++// 001, equal 100, unordered 111). The flag outputs let the compiler branch
++// on them directly; the three bools are the lifted function's F.zf/pf/cf.
++// The caller clears OF, SF and AF. Not lazy (or not x86-64): the exact path.
++[[gnu::always_inline]] inline void Comi(bool lz, Ctx& c, bool dbl, bool ordered, const Xmm& a,
++                                        const Xmm& b, uint64_t va, bool& zf, bool& pf,
++                                        bool& cf) {
++#if defined(__x86_64__) && (defined(__clang__) || defined(__GNUC__))
++  if (lz) {
++    if (dbl) {
++      double x, y;
++      std::memcpy(&x, a.b, 8);
++      std::memcpy(&y, b.b, 8);
++      asm("ucomisd %[y], %[x]" : "=@ccz"(zf), "=@ccp"(pf), "=@ccc"(cf) : [x] "x"(x), [y] "x"(y));
++    } else {
++      float x, y;
++      std::memcpy(&x, a.b, 4);
++      std::memcpy(&y, b.b, 4);
++      asm("ucomiss %[y], %[x]" : "=@ccz"(zf), "=@ccp"(pf), "=@ccc"(cf) : [x] "x"(x), [y] "x"(y));
++    }
++    return;
++  }
++#endif
++  const Xmm ta = a, tb = b;
++  const int r = ComiOol(c, dbl, ordered, ta, tb, va);
++  zf = r >= 2;
++  pf = r == 3;
++  cf = r == 1 || r == 3;
++}
++[[gnu::always_inline]] inline void Comi(Ctx& c, bool dbl, bool ordered, const Xmm& a,
++                                        const Xmm& b, uint64_t va, bool& zf, bool& pf,
++                                        bool& cf) {
++  Comi(quiet::Lazy(c), c, dbl, ordered, a, b, va, zf, pf, cf);
++}
+ // Under lazy flags (all exceptions masked, nearest, no DAZ/FTZ) the result
+ // needs no MXCSR work: the low lanes compared as the host compares them.
+ [[gnu::always_inline]] inline int Comi(bool lz, Ctx& c, bool dbl, bool ordered, const Xmm& a,
+diff --git a/tools/lifter_x86/emit.cpp b/tools/lifter_x86/emit.cpp
+index 99827a4..3e2434d 100644
+--- a/tools/lifter_x86/emit.cpp
++++ b/tools/lifter_x86/emit.cpp
+@@ -1808,9 +1808,8 @@ void InsnEmitter::EmitSse() {
+       bool dbl = m == ZYDIS_MNEMONIC_COMISD || m == ZYDIS_MNEMONIC_UCOMISD;
+       bool ordered = m == ZYDIS_MNEMONIC_COMISS || m == ZYDIS_MNEMONIC_COMISD;
+       std::string s = src(1);
+-      L(Fmt("const int r = ::recomp::sse::Comi(c, %s, %s, %s, %s, %s);", b(dbl),
++      L(Fmt("::recomp::sse::Comi(c, %s, %s, %s, %s, %s, F.zf, F.pf, F.cf);", b(dbl),
+             b(ordered), XmmRef(0).c_str(), s.c_str(), va.c_str()));
+-      L("F.zf = r >= 2; F.pf = r == 3; F.cf = r == 1 || r == 3;");
+       L("F.of = false; F.sf = false; F.af = false;");
+       return;
+     }
+-- 
+2.51.0.windows.1
+

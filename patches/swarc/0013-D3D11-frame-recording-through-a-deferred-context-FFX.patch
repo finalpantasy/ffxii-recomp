@@ -1,0 +1,570 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: finalpantasy <finalpantasy@users.noreply.github.com>
+Date: Sun, 22 Nov 2026 08:54:58 -0500
+Subject: [PATCH 13/34] D3D11 frame recording through a deferred context
+ (FFXII_D3D_RECORD=1)
+
+The game's immediate-context calls go to a host deferred context; the list
+runs on the immediate context at sync points: Present, ResizeBuffers,
+GetData, Flush and maps that read. The first NO_OVERWRITE map of a buffer
+in a list becomes a DISCARD refilled from a host mirror of the buffer, as
+deferred contexts require. This is the base for replaying a frame with
+blended constant buffers. FFXII field and combat render identically and
+hold 60 fps with it on.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ platforms/win32/src/win32/d3d11.cpp | 188 ++++++++++++++++++++--------
+ platforms/win32/src/win32/d3d11.h   |   6 +
+ platforms/win32/src/win32/dxgi.cpp  |   2 +
+ platforms/win32/src/win32/dxvk.h    |   4 +
+ 4 files changed, 151 insertions(+), 49 deletions(-)
+
+diff --git a/platforms/win32/src/win32/d3d11.cpp b/platforms/win32/src/win32/d3d11.cpp
+index ecaa9e6..a99ede2 100644
+--- a/platforms/win32/src/win32/d3d11.cpp
++++ b/platforms/win32/src/win32/d3d11.cpp
+@@ -26,6 +26,42 @@ BufferUploadHook g_buffer_upload_hook = nullptr;
+ namespace {
+ 
+ constexpr const char* kDll = "d3d11.dll";
++
++// ---- frame recording (see d3d11.h) ----------------------------------------
++struct Recorder {
++  ID3D11DeviceContext* immediate = nullptr;
++  ID3D11DeviceContext* deferred = nullptr;
++  uint64_t list = 1;  // serial of the command list being recorded
++  uint64_t calls = 0;
++};
++Recorder g_rec;
++
++// The host context for a guest context: the deferred one in place of the
++// immediate context while recording.
++ID3D11DeviceContext* HostContext(gaddr guest) {
++  ID3D11DeviceContext* host = DxvkHost<ID3D11DeviceContext>(guest);
++  if (g_rec.deferred && host == g_rec.immediate) return g_rec.deferred;
++  return host;
++}
++// The host context itself, after running what was recorded: for calls a
++// deferred context cannot make (GetData, reading maps, Flush).
++ID3D11DeviceContext* SyncContext(gaddr guest) {
++  ID3D11DeviceContext* host = DxvkHost<ID3D11DeviceContext>(guest);
++  if (g_rec.deferred && host == g_rec.immediate) D3d11FlushRecorded();
++  return host;
++}
++
++void StartRecording(ID3D11Device* device, ID3D11DeviceContext* immediate) {
++  if (!device || !immediate || g_rec.deferred || !Env("D3D_RECORD")) return;
++  ID3D11DeviceContext* deferred = nullptr;
++  if (FAILED(device->CreateDeferredContext(0, &deferred)) || !deferred) {
++    WarnF("d3d11: CreateDeferredContext failed; frame recording off\n");
++    return;
++  }
++  g_rec.immediate = immediate;
++  g_rec.deferred = deferred;
++  std::fprintf(stderr, "[d3d11] frame recording on (deferred context)\n");
++}
+ constexpr uint32_t kEInvalidArg = 0x80070057;
+ constexpr uint32_t kEOutOfMemory = 0x8007000E;
+ 
+@@ -419,14 +455,31 @@ void CountMap(ID3D11Resource* resource, D3D11_MAP type) {
+ }
+ 
+ uint32_t Map(Ctx& c) {
+-  ID3D11DeviceContext* context = DxvkHost<ID3D11DeviceContext>(Arg(c, 0));
++  D3D11_MAP type = D3D11_MAP(uint32_t(Arg(c, 3)));
++  // A deferred context maps only with WRITE_DISCARD or NO_OVERWRITE; other
++  // maps run on the immediate context after what is recorded.
++  const bool writes_only = type == D3D11_MAP_WRITE_DISCARD || type == D3D11_MAP_WRITE_NO_OVERWRITE;
++  ID3D11DeviceContext* context = writes_only ? HostContext(Arg(c, 0)) : SyncContext(Arg(c, 0));
+   ID3D11Resource* resource = DxvkHost<ID3D11Resource>(Arg(c, 1));
+   gaddr out = Arg(c, 5);
+   if (!context || !resource || !out) return kEInvalidArg;
+   D3D11_MAPPED_SUBRESOURCE mapped{};
+-  D3D11_MAP type = D3D11_MAP(uint32_t(Arg(c, 3)));
+   CountMap(resource, type);
+-  HRESULT hr = context->Map(resource, uint32_t(Arg(c, 2)), type, uint32_t(Arg(c, 4)), &mapped);
++  DxvkObject* object = com::As<DxvkObject>(Arg(c, 1));
++  const bool deferred = context == g_rec.deferred && g_rec.deferred;
++  // NO_OVERWRITE on a deferred context needs a WRITE_DISCARD of the buffer
++  // earlier in the same command list: the first one in a list becomes a
++  // DISCARD, refilled from the buffer's last contents (its mirror).
++  D3D11_MAP host_type = type;
++  bool refill = false;
++  if (deferred && type == D3D11_MAP_WRITE_NO_OVERWRITE && object &&
++      object->discard_list != g_rec.list) {
++    host_type = D3D11_MAP_WRITE_DISCARD;
++    refill = true;
++  }
++  HRESULT hr = context->Map(resource, uint32_t(Arg(c, 2)), host_type, uint32_t(Arg(c, 4)), &mapped);
++  if (SUCCEEDED(hr) && deferred && object && host_type == D3D11_MAP_WRITE_DISCARD)
++    object->discard_list = g_rec.list;
+   if (FAILED(hr)) return uint32_t(hr);
+   size_t size = MappedSize(resource, uint32_t(Arg(c, 2)), mapped);
+   if (!size) {
+@@ -441,9 +494,16 @@ uint32_t Map(Ctx& c) {
+   // Unmap copies the whole shadow back, so every map but WRITE_DISCARD must
+   // start from the buffer's contents: a NO_OVERWRITE map of a ring buffer
+   // writes one slice and the rest is still queued for earlier draws.
+-  if (type != D3D11_MAP_WRITE_DISCARD)
+-    std::memcpy(GPtr(shadow), mapped.pData, size);
+-  DxvkObject* object = com::As<DxvkObject>(Arg(c, 1));
++  if (type != D3D11_MAP_WRITE_DISCARD) {
++    if (deferred) {
++      // A deferred map's memory is not the buffer's; start from the mirror.
++      const size_t n = std::min(size, object->mirror.size());
++      if (n) std::memcpy(GPtr(shadow), object->mirror.data(), n);
++    } else {
++      std::memcpy(GPtr(shadow), mapped.pData, size);
++    }
++  }
++  (void)refill;
+   object->mappings[uint32_t(Arg(c, 2))] =
+       DxvkMapping{mapped.pData, shadow, size, uint32_t(type)};
+   Wr64(out, shadow);
+@@ -461,16 +521,28 @@ bool BufferDesc(ID3D11Resource* resource, D3D11_BUFFER_DESC* desc) {
+ }
+ 
+ uint32_t Unmap(Ctx& c) {
+-  ID3D11DeviceContext* context = DxvkHost<ID3D11DeviceContext>(Arg(c, 0));
+   ID3D11Resource* resource = DxvkHost<ID3D11Resource>(Arg(c, 1));
+   DxvkObject* object = com::As<DxvkObject>(Arg(c, 1));
+   uint32_t subresource = uint32_t(Arg(c, 2));
+-  if (!context || !resource || !object) return 0;
++  if (!resource || !object) return 0;
+   auto it = object->mappings.find(subresource);
++  const bool writes_only = it == object->mappings.end() ||
++                           it->second.type == D3D11_MAP_WRITE_DISCARD ||
++                           it->second.type == D3D11_MAP_WRITE_NO_OVERWRITE;
++  ID3D11DeviceContext* context =
++      writes_only ? HostContext(Arg(c, 0)) : DxvkHost<ID3D11DeviceContext>(Arg(c, 0));
++  if (!context) return 0;
+   if (it != object->mappings.end()) {
+     const DxvkMapping mapping = it->second;
+     if (mapping.type != D3D11_MAP_READ) {
+       std::memcpy(mapping.host_data, GPtr(mapping.guest_data), mapping.size);
++      D3D11_RESOURCE_DIMENSION dim = D3D11_RESOURCE_DIMENSION_UNKNOWN;
++      if (g_rec.deferred) resource->GetType(&dim);
++      if (dim == D3D11_RESOURCE_DIMENSION_BUFFER && (mapping.type == D3D11_MAP_WRITE_DISCARD ||
++                                                     mapping.type == D3D11_MAP_WRITE_NO_OVERWRITE)) {
++        const uint8_t* g = GPtr(mapping.guest_data);
++        object->mirror.assign(g, g + mapping.size);
++      }
+       D3D11_BUFFER_DESC desc{};
+       if (g_buffer_upload_hook && BufferDesc(resource, &desc))
+         g_buffer_upload_hook(GPtr(mapping.guest_data), mapping.size, desc.BindFlags,
+@@ -487,6 +559,19 @@ uint32_t Unmap(Ctx& c) {
+ 
+ }  // namespace
+ 
++void D3d11FlushRecorded() {
++  if (!g_rec.deferred) return;
++  ID3D11CommandList* list = nullptr;
++  HRESULT hr = g_rec.deferred->FinishCommandList(TRUE, &list);
++  ++g_rec.list;
++  if (FAILED(hr) || !list) {
++    WarnF("d3d11: FinishCommandList failed: 0x%08X\n", uint32_t(hr));
++    return;
++  }
++  g_rec.immediate->ExecuteCommandList(list, FALSE);
++  list->Release();
++}
++
+ HLE64(kDll, D3D11CreateDevice, kCdecl) {
+   setenv("DXVK_WSI_DRIVER", "SDL3", 0);
+   if (Arg(c, 2)) FatalF("D3D11CreateDevice software module is unsupported");
+@@ -502,6 +587,7 @@ HLE64(kDll, D3D11CreateDevice, kCdecl) {
+   if (SUCCEEDED(hr)) {
+     if (Arg(c, 7)) Wr64(Arg(c, 7), WrapOut(device)); else if (device) device->Release();
+     if (Arg(c, 8)) Wr32(Arg(c, 8), level);
++    StartRecording(device, context);
+     if (Arg(c, 9)) Wr64(Arg(c, 9), WrapOut(context)); else if (context) context->Release();
+   }
+   return uint32_t(hr);
+@@ -531,6 +617,7 @@ HLE64(kDll, D3D11CreateDeviceAndSwapChain, kCdecl) {
+     if (Arg(c, 8)) Wr64(Arg(c, 8), WrapOut(swap)); else if (swap) swap->Release();
+     if (Arg(c, 9)) Wr64(Arg(c, 9), WrapOut(device)); else if (device) device->Release();
+     if (Arg(c, 10)) Wr32(Arg(c, 10), level);
++    StartRecording(device, context);
+     if (Arg(c, 11)) Wr64(Arg(c, 11), WrapOut(context)); else if (context) context->Release();
+   }
+   return uint32_t(hr);
+@@ -919,7 +1006,7 @@ HLE_NAMED_X(kDll, "ID3D11DeviceContext::Unmap", D3dContextUnmap, kCdecl, true) {
+   HLE_NAMED_X(kDll, "ID3D11DeviceContext::" #method, handler, kCdecl, true) {            \
+     uint32_t count = uint32_t(Arg(c, 2));                                                  \
+     auto values = GuestInterfaces<type>(Arg(c, 3), count);                                 \
+-    DxvkHost<ID3D11DeviceContext>(Arg(c, 0))->method(uint32_t(Arg(c, 1)), count,            \
++    HostContext(Arg(c, 0))->method(uint32_t(Arg(c, 1)), count,            \
+                                                      values.data());                        \
+     return 0;                                                                              \
+   }
+@@ -946,7 +1033,7 @@ D3D11_SET_BINDINGS(CSSetSamplers, D3dCsSetSampler, ID3D11SamplerState)
+ #define D3D11_SET_SHADER(method, handler, type)                                            \
+   HLE_NAMED_X(kDll, "ID3D11DeviceContext::" #method, handler, kCdecl, true) {            \
+     if (Arg(c, 3)) FatalF("ID3D11DeviceContext::" #method " class instances");             \
+-    DxvkHost<ID3D11DeviceContext>(Arg(c, 0))->method(DxvkHost<type>(Arg(c, 1)), nullptr, 0); \
++    HostContext(Arg(c, 0))->method(DxvkHost<type>(Arg(c, 1)), nullptr, 0); \
+     return 0;                                                                              \
+   }
+ D3D11_SET_SHADER(VSSetShader, D3dVsSetShader, ID3D11VertexShader)
+@@ -959,7 +1046,7 @@ D3D11_SET_SHADER(CSSetShader, D3dCsSetShader, ID3D11ComputeShader)
+ 
+ #define D3D11_SIMPLE_CONTEXT(method, handler, args)                                        \
+   HLE_NAMED_X(kDll, "ID3D11DeviceContext::" #method, handler, kCdecl, true) {            \
+-    DxvkHost<ID3D11DeviceContext>(Arg(c, 0))->method args;                                 \
++    HostContext(Arg(c, 0))->method args;                                 \
+     return 0;                                                                              \
+   }
+ // Draws and dispatches warn about counts no real frame uses (a garbage
+@@ -978,7 +1065,7 @@ void CheckWorkSize(const char* method, const Ctx& c, int nargs, uint64_t limit)
+ #define D3D11_CHECKED_CONTEXT(method, handler, nargs, limit, args)                                        \
+   HLE_NAMED_X(kDll, "ID3D11DeviceContext::" #method, handler, kCdecl, true) {            \
+     CheckWorkSize(#method, c, nargs, limit);                                             \
+-    DxvkHost<ID3D11DeviceContext>(Arg(c, 0))->method args;                                 \
++    HostContext(Arg(c, 0))->method args;                                 \
+     return 0;                                                                              \
+   }
+ D3D11_CHECKED_CONTEXT(DrawIndexed, D3dDrawIndexed, 1, 1u << 24,
+@@ -1012,7 +1099,10 @@ D3D11_SIMPLE_CONTEXT(RSSetScissorRects, D3dRsSetScissors,
+ D3D11_SIMPLE_CONTEXT(OMSetDepthStencilState, D3dOmSetDepthState,
+                      (DxvkHost<ID3D11DepthStencilState>(Arg(c, 1)), uint32_t(Arg(c, 2))))
+ D3D11_SIMPLE_CONTEXT(ClearState, D3dClearState, ())
+-D3D11_SIMPLE_CONTEXT(Flush, D3dFlush, ())
++HLE_NAMED_X(kDll, "ID3D11DeviceContext::Flush", D3dFlush, kCdecl, true) {
++  SyncContext(Arg(c, 0))->Flush();
++  return 0;
++}
+ D3D11_SIMPLE_CONTEXT(GenerateMips, D3dGenerateMips,
+                      (DxvkHost<ID3D11ShaderResourceView>(Arg(c, 1))))
+ D3D11_SIMPLE_CONTEXT(SetResourceMinLOD, D3dSetResourceMinLod,
+@@ -1030,13 +1120,13 @@ HLE_NAMED_X(kDll, "ID3D11DeviceContext::IASetVertexBuffers", D3dIaSetVertexBuffe
+             kCdecl, true) {
+   uint32_t count = uint32_t(Arg(c, 2));
+   auto buffers = GuestInterfaces<ID3D11Buffer>(Arg(c, 3), count);
+-  DxvkHost<ID3D11DeviceContext>(Arg(c, 0))->IASetVertexBuffers(
++  HostContext(Arg(c, 0))->IASetVertexBuffers(
+       uint32_t(Arg(c, 1)), count, buffers.data(), reinterpret_cast<const UINT*>(Ptr(Arg(c, 4))),
+       reinterpret_cast<const UINT*>(Ptr(Arg(c, 5))));
+   return 0;
+ }
+ HLE_NAMED_X(kDll, "ID3D11DeviceContext::IASetIndexBuffer", D3dIaSetIndexBuffer, kCdecl, true) {
+-  DxvkHost<ID3D11DeviceContext>(Arg(c, 0))->IASetIndexBuffer(
++  HostContext(Arg(c, 0))->IASetIndexBuffer(
+       DxvkHost<ID3D11Buffer>(Arg(c, 1)), DXGI_FORMAT(uint32_t(Arg(c, 2))), uint32_t(Arg(c, 3)));
+   return 0;
+ }
+@@ -1253,8 +1343,8 @@ void MaybeDumpTarget(ID3D11DeviceContext* ctx, ID3D11RenderTargetView* next) {
+ HLE_NAMED_X(kDll, "ID3D11DeviceContext::OMSetRenderTargets", D3dOmSetTargets, kCdecl, true) {
+   uint32_t count = uint32_t(Arg(c, 1));
+   auto views = GuestInterfaces<ID3D11RenderTargetView>(Arg(c, 2), count);
+-  MaybeDumpTarget(DxvkHost<ID3D11DeviceContext>(Arg(c, 0)), count ? views[0] : nullptr);
+-  DxvkHost<ID3D11DeviceContext>(Arg(c, 0))->OMSetRenderTargets(
++  MaybeDumpTarget(HostContext(Arg(c, 0)), count ? views[0] : nullptr);
++  HostContext(Arg(c, 0))->OMSetRenderTargets(
+       count, views.data(), DxvkHost<ID3D11DepthStencilView>(Arg(c, 3)));
+   return 0;
+ }
+@@ -1270,8 +1360,8 @@ HLE_NAMED_X(kDll, "ID3D11DeviceContext::OMSetRenderTargetsAndUnorderedAccessView
+   if (uav_count != kKeep)
+     uavs = GuestInterfaces<ID3D11UnorderedAccessView>(Arg(c, 6), uav_count);
+   if (rt_count != kKeep)
+-    MaybeDumpTarget(DxvkHost<ID3D11DeviceContext>(Arg(c, 0)), rt_count ? views[0] : nullptr);
+-  DxvkHost<ID3D11DeviceContext>(Arg(c, 0))->OMSetRenderTargetsAndUnorderedAccessViews(
++    MaybeDumpTarget(HostContext(Arg(c, 0)), rt_count ? views[0] : nullptr);
++  HostContext(Arg(c, 0))->OMSetRenderTargetsAndUnorderedAccessViews(
+       rt_count, rt_count != kKeep ? views.data() : nullptr,
+       DxvkHost<ID3D11DepthStencilView>(Arg(c, 3)), uint32_t(Arg(c, 4)), uav_count,
+       uav_count != kKeep ? uavs.data() : nullptr,
+@@ -1282,12 +1372,12 @@ HLE_NAMED_X(kDll, "ID3D11DeviceContext::CSSetUnorderedAccessViews", D3dCsSetUav,
+             kCdecl, true) {
+   uint32_t count = uint32_t(Arg(c, 2));
+   auto uavs = GuestInterfaces<ID3D11UnorderedAccessView>(Arg(c, 3), count);
+-  DxvkHost<ID3D11DeviceContext>(Arg(c, 0))->CSSetUnorderedAccessViews(
++  HostContext(Arg(c, 0))->CSSetUnorderedAccessViews(
+       uint32_t(Arg(c, 1)), count, uavs.data(), reinterpret_cast<const UINT*>(Ptr(Arg(c, 4))));
+   return 0;
+ }
+ HLE_NAMED_X(kDll, "ID3D11DeviceContext::OMSetBlendState", D3dOmSetBlendState, kCdecl, true) {
+-  DxvkHost<ID3D11DeviceContext>(Arg(c, 0))->OMSetBlendState(
++  HostContext(Arg(c, 0))->OMSetBlendState(
+       DxvkHost<ID3D11BlendState>(Arg(c, 1)), reinterpret_cast<const FLOAT*>(Ptr(Arg(c, 2))),
+       uint32_t(Arg(c, 3)));
+   return 0;
+@@ -1295,42 +1385,42 @@ HLE_NAMED_X(kDll, "ID3D11DeviceContext::OMSetBlendState", D3dOmSetBlendState, kC
+ HLE_NAMED_X(kDll, "ID3D11DeviceContext::SOSetTargets", D3dSoSetTargets, kCdecl, true) {
+   uint32_t count = uint32_t(Arg(c, 1));
+   auto buffers = GuestInterfaces<ID3D11Buffer>(Arg(c, 2), count);
+-  DxvkHost<ID3D11DeviceContext>(Arg(c, 0))->SOSetTargets(
++  HostContext(Arg(c, 0))->SOSetTargets(
+       count, buffers.data(), reinterpret_cast<const UINT*>(Ptr(Arg(c, 3))));
+   return 0;
+ }
+ HLE_NAMED_X(kDll, "ID3D11DeviceContext::ClearRenderTargetView", D3dClearRtv, kCdecl, true) {
+-  DxvkHost<ID3D11DeviceContext>(Arg(c, 0))->ClearRenderTargetView(
++  HostContext(Arg(c, 0))->ClearRenderTargetView(
+       DxvkHost<ID3D11RenderTargetView>(Arg(c, 1)), reinterpret_cast<const FLOAT*>(Ptr(Arg(c, 2))));
+   return 0;
+ }
+ HLE_NAMED_X(kDll, "ID3D11DeviceContext::ClearUnorderedAccessViewUint", D3dClearUavUint,
+             kCdecl, true) {
+-  DxvkHost<ID3D11DeviceContext>(Arg(c, 0))->ClearUnorderedAccessViewUint(
++  HostContext(Arg(c, 0))->ClearUnorderedAccessViewUint(
+       DxvkHost<ID3D11UnorderedAccessView>(Arg(c, 1)), reinterpret_cast<const UINT*>(Ptr(Arg(c, 2))));
+   return 0;
+ }
+ HLE_NAMED_X(kDll, "ID3D11DeviceContext::ClearUnorderedAccessViewFloat", D3dClearUavFloat,
+             kCdecl, true) {
+-  DxvkHost<ID3D11DeviceContext>(Arg(c, 0))->ClearUnorderedAccessViewFloat(
++  HostContext(Arg(c, 0))->ClearUnorderedAccessViewFloat(
+       DxvkHost<ID3D11UnorderedAccessView>(Arg(c, 1)),
+       reinterpret_cast<const FLOAT*>(Ptr(Arg(c, 2))));
+   return 0;
+ }
+ HLE_NAMED_X(kDll, "ID3D11DeviceContext::ClearDepthStencilView", D3dClearDsv, kCdecl, true) {
+-  DxvkHost<ID3D11DeviceContext>(Arg(c, 0))->ClearDepthStencilView(
++  HostContext(Arg(c, 0))->ClearDepthStencilView(
+       DxvkHost<ID3D11DepthStencilView>(Arg(c, 1)), uint32_t(Arg(c, 2)), ArgF(c, 3),
+       uint8_t(Arg(c, 4)));
+   return 0;
+ }
+ HLE_NAMED_X(kDll, "ID3D11DeviceContext::CopyResource", D3dCopyResource, kCdecl, true) {
+-  DxvkHost<ID3D11DeviceContext>(Arg(c, 0))->CopyResource(DxvkHost<ID3D11Resource>(Arg(c, 1)),
++  HostContext(Arg(c, 0))->CopyResource(DxvkHost<ID3D11Resource>(Arg(c, 1)),
+                                                         DxvkHost<ID3D11Resource>(Arg(c, 2)));
+   return 0;
+ }
+ HLE_NAMED_X(kDll, "ID3D11DeviceContext::CopySubresourceRegion", D3dCopySubresource,
+             kCdecl, true) {
+-  DxvkHost<ID3D11DeviceContext>(Arg(c, 0))->CopySubresourceRegion(
++  HostContext(Arg(c, 0))->CopySubresourceRegion(
+       DxvkHost<ID3D11Resource>(Arg(c, 1)), uint32_t(Arg(c, 2)), uint32_t(Arg(c, 3)),
+       uint32_t(Arg(c, 4)), uint32_t(Arg(c, 5)), DxvkHost<ID3D11Resource>(Arg(c, 6)),
+       uint32_t(Arg(c, 7)), reinterpret_cast<const D3D11_BOX*>(Ptr(Arg(c, 8))));
+@@ -1346,7 +1436,7 @@ HLE_NAMED_X(kDll, "ID3D11DeviceContext::UpdateSubresource", D3dUpdateSubresource
+       g_buffer_upload_hook(Ptr(Arg(c, 4)), size, desc.BindFlags, desc.ByteWidth);
+     }
+   }
+-  DxvkHost<ID3D11DeviceContext>(Arg(c, 0))->UpdateSubresource(
++  HostContext(Arg(c, 0))->UpdateSubresource(
+       DxvkHost<ID3D11Resource>(Arg(c, 1)), uint32_t(Arg(c, 2)),
+       reinterpret_cast<const D3D11_BOX*>(Ptr(Arg(c, 3))), Ptr(Arg(c, 4)), uint32_t(Arg(c, 5)),
+       uint32_t(Arg(c, 6)));
+@@ -1354,26 +1444,26 @@ HLE_NAMED_X(kDll, "ID3D11DeviceContext::UpdateSubresource", D3dUpdateSubresource
+ }
+ HLE_NAMED_X(kDll, "ID3D11DeviceContext::CopyStructureCount", D3dCopyStructureCount,
+             kCdecl, true) {
+-  DxvkHost<ID3D11DeviceContext>(Arg(c, 0))->CopyStructureCount(
++  HostContext(Arg(c, 0))->CopyStructureCount(
+       DxvkHost<ID3D11Buffer>(Arg(c, 1)), uint32_t(Arg(c, 2)),
+       DxvkHost<ID3D11UnorderedAccessView>(Arg(c, 3)));
+   return 0;
+ }
+ HLE_NAMED_X(kDll, "ID3D11DeviceContext::ResolveSubresource", D3dResolveSubresource,
+             kCdecl, true) {
+-  DxvkHost<ID3D11DeviceContext>(Arg(c, 0))->ResolveSubresource(
++  HostContext(Arg(c, 0))->ResolveSubresource(
+       DxvkHost<ID3D11Resource>(Arg(c, 1)), uint32_t(Arg(c, 2)),
+       DxvkHost<ID3D11Resource>(Arg(c, 3)), uint32_t(Arg(c, 4)), DXGI_FORMAT(uint32_t(Arg(c, 5))));
+   return 0;
+ }
+ HLE_NAMED_X(kDll, "ID3D11DeviceContext::GetData", D3dGetData, kCdecl, true) {
+-  return uint32_t(DxvkHost<ID3D11DeviceContext>(Arg(c, 0))->GetData(
++  return uint32_t(SyncContext(Arg(c, 0))->GetData(
+       DxvkHost<ID3D11Asynchronous>(Arg(c, 1)), Ptr(Arg(c, 2)), uint32_t(Arg(c, 3)),
+       uint32_t(Arg(c, 4))));
+ }
+ HLE_NAMED_X(kDll, "ID3D11DeviceContext::GetResourceMinLOD", D3dGetResourceMinLod,
+             kCdecl, true) {
+-  FLOAT result = DxvkHost<ID3D11DeviceContext>(Arg(c, 0))->GetResourceMinLOD(
++  FLOAT result = HostContext(Arg(c, 0))->GetResourceMinLOD(
+       DxvkHost<ID3D11Resource>(Arg(c, 1)));
+   return RetF(c, result);
+ }
+@@ -1387,7 +1477,7 @@ HLE_NAMED_X(kDll, "ID3D11DeviceContext::FinishCommandList", D3dFinishCommandList
+             kCdecl, true) {
+   if (!Arg(c, 2)) return kEInvalidArg;
+   ID3D11CommandList* host = nullptr;
+-  HRESULT hr = DxvkHost<ID3D11DeviceContext>(Arg(c, 0))->FinishCommandList(
++  HRESULT hr = HostContext(Arg(c, 0))->FinishCommandList(
+       uint32_t(Arg(c, 1)), &host);
+   Wr64(Arg(c, 2), SUCCEEDED(hr) ? WrapOut(host) : 0);
+   return uint32_t(hr);
+@@ -1397,7 +1487,7 @@ HLE_NAMED_X(kDll, "ID3D11DeviceContext::FinishCommandList", D3dFinishCommandList
+   HLE_NAMED_X(kDll, "ID3D11DeviceContext::" #method, handler, kCdecl, true) {            \
+     uint32_t count = uint32_t(Arg(c, 2));                                                  \
+     std::vector<type*> values(count);                                                      \
+-    DxvkHost<ID3D11DeviceContext>(Arg(c, 0))->method(uint32_t(Arg(c, 1)), count,            \
++    HostContext(Arg(c, 0))->method(uint32_t(Arg(c, 1)), count,            \
+                                                      values.data());                        \
+     WrapInterfaces(values.data(), count, Arg(c, 3));                                       \
+     return 0;                                                                              \
+@@ -1428,7 +1518,7 @@ D3D11_GET_BINDINGS(CSGetUnorderedAccessViews, D3dCsGetUav, ID3D11UnorderedAccess
+     type* shader = nullptr;                                                                \
+     UINT count = Arg(c, 3) ? Rd32(Arg(c, 3)) : 0;                                          \
+     std::vector<ID3D11ClassInstance*> instances(count);                                    \
+-    DxvkHost<ID3D11DeviceContext>(Arg(c, 0))->method(                                     \
++    HostContext(Arg(c, 0))->method(                                     \
+         &shader, Arg(c, 2) ? instances.data() : nullptr, Arg(c, 3) ? &count : nullptr);     \
+     if (Arg(c, 1)) Wr64(Arg(c, 1), WrapOut(shader)); else if (shader) shader->Release();    \
+     if (Arg(c, 2)) WrapInterfaces(instances.data(), std::min<uint32_t>(count, instances.size()), Arg(c, 2)); \
+@@ -1446,14 +1536,14 @@ D3D11_GET_SHADER(CSGetShader, D3dCsGetShader, ID3D11ComputeShader)
+ HLE_NAMED_X(kDll, "ID3D11DeviceContext::SOGetTargets", D3dSoGetTargets, kCdecl, true) {
+   uint32_t count = uint32_t(Arg(c, 1));
+   std::vector<ID3D11Buffer*> buffers(count);
+-  DxvkHost<ID3D11DeviceContext>(Arg(c, 0))->SOGetTargets(count, buffers.data());
++  HostContext(Arg(c, 0))->SOGetTargets(count, buffers.data());
+   WrapInterfaces(buffers.data(), count, Arg(c, 2));
+   return 0;
+ }
+ HLE_NAMED_X(kDll, "ID3D11DeviceContext::IAGetInputLayout", D3dIaGetLayout, kCdecl, true) {
+   if (!Arg(c, 1)) return 0;
+   ID3D11InputLayout* host = nullptr;
+-  DxvkHost<ID3D11DeviceContext>(Arg(c, 0))->IAGetInputLayout(&host);
++  HostContext(Arg(c, 0))->IAGetInputLayout(&host);
+   Wr64(Arg(c, 1), WrapOut(host));
+   return 0;
+ }
+@@ -1461,7 +1551,7 @@ HLE_NAMED_X(kDll, "ID3D11DeviceContext::IAGetVertexBuffers", D3dIaGetVertexBuffe
+             kCdecl, true) {
+   uint32_t count = uint32_t(Arg(c, 2));
+   std::vector<ID3D11Buffer*> buffers(count);
+-  DxvkHost<ID3D11DeviceContext>(Arg(c, 0))->IAGetVertexBuffers(
++  HostContext(Arg(c, 0))->IAGetVertexBuffers(
+       uint32_t(Arg(c, 1)), count, buffers.data(), reinterpret_cast<UINT*>(Ptr(Arg(c, 4))),
+       reinterpret_cast<UINT*>(Ptr(Arg(c, 5))));
+   WrapInterfaces(buffers.data(), count, Arg(c, 3));
+@@ -1469,7 +1559,7 @@ HLE_NAMED_X(kDll, "ID3D11DeviceContext::IAGetVertexBuffers", D3dIaGetVertexBuffe
+ }
+ HLE_NAMED_X(kDll, "ID3D11DeviceContext::IAGetIndexBuffer", D3dIaGetIndexBuffer, kCdecl, true) {
+   ID3D11Buffer* host = nullptr;
+-  DxvkHost<ID3D11DeviceContext>(Arg(c, 0))->IAGetIndexBuffer(
++  HostContext(Arg(c, 0))->IAGetIndexBuffer(
+       Arg(c, 1) ? &host : nullptr, reinterpret_cast<DXGI_FORMAT*>(Ptr(Arg(c, 2))),
+       reinterpret_cast<UINT*>(Ptr(Arg(c, 3))));
+   if (Arg(c, 1)) Wr64(Arg(c, 1), WrapOut(host));
+@@ -1479,13 +1569,13 @@ HLE_NAMED_X(kDll, "ID3D11DeviceContext::IAGetPrimitiveTopology", D3dIaGetTopolog
+             kCdecl, true) {
+   if (!Arg(c, 1)) return 0;
+   D3D11_PRIMITIVE_TOPOLOGY topology = D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;
+-  DxvkHost<ID3D11DeviceContext>(Arg(c, 0))->IAGetPrimitiveTopology(&topology);
++  HostContext(Arg(c, 0))->IAGetPrimitiveTopology(&topology);
+   Wr32(Arg(c, 1), uint32_t(topology));
+   return 0;
+ }
+ HLE_NAMED_X(kDll, "ID3D11DeviceContext::GetPredication", D3dGetPredication, kCdecl, true) {
+   ID3D11Predicate* host = nullptr;
+-  DxvkHost<ID3D11DeviceContext>(Arg(c, 0))->GetPredication(
++  HostContext(Arg(c, 0))->GetPredication(
+       Arg(c, 1) ? &host : nullptr, reinterpret_cast<BOOL*>(Ptr(Arg(c, 2))));
+   if (Arg(c, 1)) Wr64(Arg(c, 1), WrapOut(host));
+   return 0;
+@@ -1494,7 +1584,7 @@ HLE_NAMED_X(kDll, "ID3D11DeviceContext::OMGetRenderTargets", D3dOmGetTargets, kC
+   uint32_t count = uint32_t(Arg(c, 1));
+   std::vector<ID3D11RenderTargetView*> views(count);
+   ID3D11DepthStencilView* depth = nullptr;
+-  DxvkHost<ID3D11DeviceContext>(Arg(c, 0))->OMGetRenderTargets(
++  HostContext(Arg(c, 0))->OMGetRenderTargets(
+       count, views.data(), Arg(c, 3) ? &depth : nullptr);
+   WrapInterfaces(views.data(), count, Arg(c, 2));
+   if (Arg(c, 3)) Wr64(Arg(c, 3), WrapOut(depth));
+@@ -1507,7 +1597,7 @@ HLE_NAMED_X(kDll, "ID3D11DeviceContext::OMGetRenderTargetsAndUnorderedAccessView
+   std::vector<ID3D11RenderTargetView*> views(rt_count);
+   std::vector<ID3D11UnorderedAccessView*> uavs(uav_count);
+   ID3D11DepthStencilView* depth = nullptr;
+-  DxvkHost<ID3D11DeviceContext>(Arg(c, 0))->OMGetRenderTargetsAndUnorderedAccessViews(
++  HostContext(Arg(c, 0))->OMGetRenderTargetsAndUnorderedAccessViews(
+       rt_count, views.data(), Arg(c, 3) ? &depth : nullptr, uint32_t(Arg(c, 4)), uav_count,
+       uavs.data());
+   WrapInterfaces(views.data(), rt_count, Arg(c, 2));
+@@ -1517,7 +1607,7 @@ HLE_NAMED_X(kDll, "ID3D11DeviceContext::OMGetRenderTargetsAndUnorderedAccessView
+ }
+ HLE_NAMED_X(kDll, "ID3D11DeviceContext::OMGetBlendState", D3dOmGetBlendState, kCdecl, true) {
+   ID3D11BlendState* host = nullptr;
+-  DxvkHost<ID3D11DeviceContext>(Arg(c, 0))->OMGetBlendState(
++  HostContext(Arg(c, 0))->OMGetBlendState(
+       Arg(c, 1) ? &host : nullptr, reinterpret_cast<FLOAT*>(Ptr(Arg(c, 2))),
+       reinterpret_cast<UINT*>(Ptr(Arg(c, 3))));
+   if (Arg(c, 1)) Wr64(Arg(c, 1), WrapOut(host));
+@@ -1526,7 +1616,7 @@ HLE_NAMED_X(kDll, "ID3D11DeviceContext::OMGetBlendState", D3dOmGetBlendState, kC
+ HLE_NAMED_X(kDll, "ID3D11DeviceContext::OMGetDepthStencilState", D3dOmGetDepthState,
+             kCdecl, true) {
+   ID3D11DepthStencilState* host = nullptr;
+-  DxvkHost<ID3D11DeviceContext>(Arg(c, 0))->OMGetDepthStencilState(
++  HostContext(Arg(c, 0))->OMGetDepthStencilState(
+       Arg(c, 1) ? &host : nullptr, reinterpret_cast<UINT*>(Ptr(Arg(c, 2))));
+   if (Arg(c, 1)) Wr64(Arg(c, 1), WrapOut(host));
+   return 0;
+@@ -1534,17 +1624,17 @@ HLE_NAMED_X(kDll, "ID3D11DeviceContext::OMGetDepthStencilState", D3dOmGetDepthSt
+ HLE_NAMED_X(kDll, "ID3D11DeviceContext::RSGetState", D3dRsGetState, kCdecl, true) {
+   if (!Arg(c, 1)) return 0;
+   ID3D11RasterizerState* host = nullptr;
+-  DxvkHost<ID3D11DeviceContext>(Arg(c, 0))->RSGetState(&host);
++  HostContext(Arg(c, 0))->RSGetState(&host);
+   Wr64(Arg(c, 1), WrapOut(host));
+   return 0;
+ }
+ HLE_NAMED_X(kDll, "ID3D11DeviceContext::RSGetViewports", D3dRsGetViewports, kCdecl, true) {
+-  DxvkHost<ID3D11DeviceContext>(Arg(c, 0))->RSGetViewports(
++  HostContext(Arg(c, 0))->RSGetViewports(
+       reinterpret_cast<UINT*>(Ptr(Arg(c, 1))), reinterpret_cast<D3D11_VIEWPORT*>(Ptr(Arg(c, 2))));
+   return 0;
+ }
+ HLE_NAMED_X(kDll, "ID3D11DeviceContext::RSGetScissorRects", D3dRsGetScissors, kCdecl, true) {
+-  DxvkHost<ID3D11DeviceContext>(Arg(c, 0))->RSGetScissorRects(
++  HostContext(Arg(c, 0))->RSGetScissorRects(
+       reinterpret_cast<UINT*>(Ptr(Arg(c, 1))), reinterpret_cast<D3D11_RECT*>(Ptr(Arg(c, 2))));
+   return 0;
+ }
+diff --git a/platforms/win32/src/win32/d3d11.h b/platforms/win32/src/win32/d3d11.h
+index e1a1391..50f7bb0 100644
+--- a/platforms/win32/src/win32/d3d11.h
++++ b/platforms/win32/src/win32/d3d11.h
+@@ -15,4 +15,10 @@ using BufferUploadHook = void (*)(const void* data, size_t size, uint32_t bind_f
+                                   uint32_t byte_width);
+ extern BufferUploadHook g_buffer_upload_hook;
+ 
++// Frame recording (FFXII_D3D_RECORD=1): the game's immediate-context calls go
++// to a host deferred context, and the recorded list runs on the immediate
++// context at every sync point (Present, GetData, Flush, reading maps).
++// Executes what is recorded so far; a no-op when recording is off.
++void D3d11FlushRecorded();
++
+ }  // namespace recomp::hle
+diff --git a/platforms/win32/src/win32/dxgi.cpp b/platforms/win32/src/win32/dxgi.cpp
+index 63e4cfa..ebd664a 100644
+--- a/platforms/win32/src/win32/dxgi.cpp
++++ b/platforms/win32/src/win32/dxgi.cpp
+@@ -492,6 +492,7 @@ void DumpFrame(IDXGISwapChain* swap) {
+ 
+ HLE_NAMED_X(kDll, "IDXGISwapChain::Present", DxgiSwapPresent, kCdecl, true) {
+   IDXGISwapChain* swap = DxvkHost<IDXGISwapChain>(Arg(c, 0));
++  D3d11FlushRecorded();
+   DumpFrame(swap);
+   return uint32_t(swap->Present(uint32_t(Arg(c, 1)), uint32_t(Arg(c, 2))));
+ }
+@@ -530,6 +531,7 @@ HLE_NAMED_X(kDll, "IDXGISwapChain::GetDesc", DxgiSwapGetDesc, kCdecl, true) {
+       reinterpret_cast<DXGI_SWAP_CHAIN_DESC*>(GPtr(Arg(c, 1)))));
+ }
+ HLE_NAMED_X(kDll, "IDXGISwapChain::ResizeBuffers", DxgiSwapResizeBuffers, kCdecl, true) {
++  D3d11FlushRecorded();
+   return uint32_t(DxvkHost<IDXGISwapChain>(Arg(c, 0))->ResizeBuffers(
+       uint32_t(Arg(c, 1)), uint32_t(Arg(c, 2)), uint32_t(Arg(c, 3)),
+       DXGI_FORMAT(uint32_t(Arg(c, 4))), uint32_t(Arg(c, 5))));
+diff --git a/platforms/win32/src/win32/dxvk.h b/platforms/win32/src/win32/dxvk.h
+index 26c9dd4..d523f61 100644
+--- a/platforms/win32/src/win32/dxvk.h
++++ b/platforms/win32/src/win32/dxvk.h
+@@ -20,6 +20,10 @@ struct DxvkMapping {
+ struct DxvkObject : com::Object {
+   IUnknown* host = nullptr;
+   std::map<uint32_t, DxvkMapping> mappings;
++  // Frame recording: the last full contents of a dynamic buffer, and the
++  // command list (serial) in which it was last mapped with WRITE_DISCARD.
++  std::vector<uint8_t> mirror;
++  uint64_t discard_list = 0;
+ 
+   ~DxvkObject();
+ };
+-- 
+2.51.0.windows.1
+

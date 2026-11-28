@@ -1,0 +1,438 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: finalpantasy <finalpantasy@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 22:02:12 -0500
+Subject: [PATCH 04/34] Windows timer resolution, inline quiet SSE path
+
+- platform_win: timeBeginPeriod(1) and opt out of hidden-window timer
+  throttling, so timed waits stop rounding up to the 15.6 ms tick.
+- kernel32 Sleep goes through platform::SleepUntilNs on Windows.
+- sse_quiet.h: the no-MXCSR-switch fast path for Arith, Sqrt and
+  MinMax is inline in generated code; sse.cpp keeps the full paths.
+- sse.cpp builds without auto-vectorization (it made Windows x64
+  prologues save XMM6-15).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ CMakeLists.txt                         |   6 +
+ platforms/win32/src/win32/kernel32.cpp |  11 ++
+ src/runtime/platform_win.cpp           |  15 ++
+ src/x86/sse.cpp                        |  26 ++--
+ src/x86/sse.h                          |  16 +-
+ src/x86/sse_quiet.h                    | 196 +++++++++++++++++++++++++
+ 6 files changed, 246 insertions(+), 24 deletions(-)
+ create mode 100644 src/x86/sse_quiet.h
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 731f708..099a54d 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -273,6 +273,9 @@ add_library(recomp_base SHARED
+ target_include_directories(recomp_base PUBLIC src)
+ target_compile_features(recomp_base PUBLIC cxx_std_20)
+ target_link_libraries(recomp_base PUBLIC recomp_log Threads::Threads)
++if(WIN32)
++  target_link_libraries(recomp_base PUBLIC winmm)
++endif()
+ 
+ # --- x86 core --------------------------------------------------------------
+ # x87 and SSE models (SoftFloat 3e, from the base).
+@@ -282,6 +285,9 @@ add_library(recomp_x87 SHARED src/x86/x87.cpp src/x86/sse.cpp src/x86/sse_ext.cp
+ if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
+   set_source_files_properties(src/x86/atomic128.cpp PROPERTIES COMPILE_OPTIONS -mcx16)
+ endif()
++# sse.cpp's quiet paths classify lanes with integer code on purpose (no
++# callee-saved XMM spills on Windows x64); keep the vectorizers off it.
++set_source_files_properties(src/x86/sse.cpp PROPERTIES COMPILE_OPTIONS "-fno-vectorize;-fno-slp-vectorize")
+ target_include_directories(recomp_x87 PUBLIC src)
+ target_compile_features(recomp_x87 PUBLIC cxx_std_20)
+ target_link_libraries(recomp_x87 PRIVATE softfloat recomp_base)
+diff --git a/platforms/win32/src/win32/kernel32.cpp b/platforms/win32/src/win32/kernel32.cpp
+index 5399607..8305f8b 100644
+--- a/platforms/win32/src/win32/kernel32.cpp
++++ b/platforms/win32/src/win32/kernel32.cpp
+@@ -15,6 +15,7 @@
+ #include <thread>
+ #include <vector>
+ 
++#include "runtime/platform.h"
+ #include "runtime/log.h"
+ #include "win32/hle.h"
+ #include "win32/kernel32_state.h"
+@@ -1308,7 +1309,17 @@ HLE("winmm.dll", midiInClose, 1) { return 5; }
+ // with Sleep in the loop.
+ HLE64("kernel32.dll", Sleep, 1) {
+   GuestSyncPoint sync;
++#if defined(_WIN32)
++  // The host's high-resolution timer: the CRT's sleep_for rounds up to
++  // the system tick.
++  const uint32_t ms = Arg(c, 0);
++  if (ms == 0)
++    std::this_thread::yield();
++  else
++    platform::SleepUntilNs(platform::MonotonicNs() + uint64_t(ms) * 1000000);
++#else
+   std::this_thread::sleep_for(std::chrono::milliseconds(Arg(c, 0)));
++#endif
+   return 0;
+ }
+ 
+diff --git a/src/runtime/platform_win.cpp b/src/runtime/platform_win.cpp
+index 3cf072d..3245932 100644
+--- a/src/runtime/platform_win.cpp
++++ b/src/runtime/platform_win.cpp
+@@ -6,6 +6,7 @@
+ 
+ #define WIN32_LEAN_AND_MEAN
+ #include <windows.h>
++#include <timeapi.h>
+ 
+ #include <fcntl.h>
+ #include <stdlib.h>
+@@ -18,6 +19,20 @@ namespace {
+ // The CRT opens files in text mode by default, which would translate line
+ // ends in every game file: make binary the default for open() and fopen().
+ const int kBinaryFiles = (_set_fmode(_O_BINARY), 0);
++
++// Timed waits (Sleep, event and condition-variable timeouts) otherwise
++// round up to the 15.6 ms system tick, which breaks 60 fps frame pacing.
++// Windows 11 drops a process's resolution request while its windows are
++// hidden or occluded unless told to keep it.
++const int kTimerResolution = [] {
++  PROCESS_POWER_THROTTLING_STATE s = {};
++  s.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
++  s.ControlMask = PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION;
++  s.StateMask = 0;
++  SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &s, sizeof s);
++  timeBeginPeriod(1);
++  return 0;
++}();
+ }  // namespace
+ 
+ size_t PageSize() {
+diff --git a/src/x86/sse.cpp b/src/x86/sse.cpp
+index 0beb347..bab2b40 100644
+--- a/src/x86/sse.cpp
++++ b/src/x86/sse.cpp
+@@ -18,8 +18,17 @@ extern "C" {
+ 
+ #include <cstdlib>
+ #include <cstring>
++#include <type_traits>
+ 
+ namespace recomp::sse {
++
++#if defined(__x86_64__)
++const bool kNativeSse = [] {
++  const char* e = std::getenv("RECOMP_SOFT_SSE");
++  return !(e && *e && *e != '0');
++}();
++#endif
++
+ namespace {
+ 
+ #if defined(__x86_64__)
+@@ -28,10 +37,7 @@ namespace {
+ // and flags are the same and several times cheaper. Only with every
+ // exception masked (an unmasked one is not modelled either way).
+ // RECOMP_SOFT_SSE=1 keeps the SoftFloat path for A/B checks.
+-const bool kNative = [] {
+-  const char* e = std::getenv("RECOMP_SOFT_SSE");
+-  return !(e && *e && *e != '0');
+-}();
++
+ 
+ typedef float V4 __attribute__((vector_size(16)));
+ 
+@@ -50,7 +56,7 @@ struct Native {
+   }
+ };
+ 
+-bool NativeOk(const Ctx& c) { return kNative && (c.mxcsr & 0x1F80) == 0x1F80; }
++bool NativeOk(const Ctx& c) { return kNativeSse && (c.mxcsr & 0x1F80) == 0x1F80; }
+ 
+ // One instruction between the guest's MXCSR and the host's again.
+ #define RECOMP_SSE_NATIVE(n, insn)                                        \
+@@ -496,8 +502,8 @@ void CheckAligned(Ctx& c, uint64_t a, uint64_t va, unsigned align) {
+            (unsigned long long)a, (unsigned long long)va);
+ }
+ 
+-void Arith(Ctx& c, Op op, bool dbl, int lanes, Xmm& d, const Xmm& s,
+-           uint64_t va) {
++void ArithSlow(Ctx& c, Op op, bool dbl, int lanes, Xmm& d, const Xmm& s,
++                      uint64_t va) {
+ #if defined(__x86_64__)
+   if (NativeOk(c) && (lanes == 1 || lanes == (dbl ? 2 : 4))) {
+     Native n(c, d, s);
+@@ -542,7 +548,7 @@ int Comi(Ctx& c, bool dbl, bool ordered, const Xmm& a, const Xmm& b,
+   return dbl ? ComiT<true>(c, ordered, a, b, va) : ComiT<false>(c, ordered, a, b, va);
+ }
+ 
+-void Sqrt(Ctx& c, bool dbl, int lanes, Xmm& d, const Xmm& s, uint64_t va) {
++void SqrtSlow(Ctx& c, bool dbl, int lanes, Xmm& d, const Xmm& s, uint64_t va) {
+ #if defined(__x86_64__)
+   if (NativeOk(c) && (lanes == 1 || lanes == (dbl ? 2 : 4))) {
+     Native n(c, d, s);
+@@ -631,8 +637,8 @@ uint64_t CvtToI64(Ctx& c, bool dbl, const Xmm& s, bool truncate, uint64_t va) {
+   return uint64_t(r);
+ }
+ 
+-void MinMax(Ctx& c, bool max, bool dbl, int lanes, Xmm& d, const Xmm& s,
+-            uint64_t va) {
++void MinMaxSlow(Ctx& c, bool max, bool dbl, int lanes, Xmm& d, const Xmm& s,
++                       uint64_t va) {
+ #if defined(__x86_64__)
+   if (NativeOk(c) && (lanes == 1 || lanes == (dbl ? 2 : 4))) {
+     Native n(c, d, s);
+diff --git a/src/x86/sse.h b/src/x86/sse.h
+index f367eb9..3dcf9a4 100644
+--- a/src/x86/sse.h
++++ b/src/x86/sse.h
+@@ -24,6 +24,7 @@
+ #include <type_traits>
+ 
+ #include "x86/ctx.h"
++#include "x86/sse_quiet.h"
+ 
+ namespace recomp::sse {
+ 
+@@ -56,12 +57,7 @@ void CheckAligned(Ctx& c, uint64_t a, uint64_t va);
+ void CheckAligned(Ctx& c, uint64_t a, uint64_t va, unsigned align);
+ 
+ // ---- floating point ---------------------------------------------------
+-enum Op : uint8_t { kAdd, kSub, kMul, kDiv };
+-
+-// d = d op s, lane-wise: `lanes` lanes of double (dbl) or float. Scalar
+-// forms pass lanes = 1 and keep the upper lanes of d.
+-void Arith(Ctx& c, Op op, bool dbl, int lanes, Xmm& d, const Xmm& s,
+-           uint64_t va);
++// Arith, Sqrt and MinMax (inline quiet paths): x86/sse_quiet.h.
+ 
+ // CMPPS/PD/SS/SD: each lane of d becomes all ones if `d pred s` holds,
+ // else zero. pred is AVX's 5-bit predicate (0 EQ_OQ, 1 LT_OS, 2 LE_OS,
+@@ -76,9 +72,6 @@ void Cmp(Ctx& c, bool dbl, int lanes, Xmm& d, const Xmm& s, uint8_t pred,
+ int Comi(Ctx& c, bool dbl, bool ordered, const Xmm& a, const Xmm& b,
+          uint64_t va);
+ 
+-// SQRTSD/SQRTSS/SQRTPD/SQRTPS: d = sqrt(s), lane-wise; scalar forms keep
+-// the upper lanes of d.
+-void Sqrt(Ctx& c, bool dbl, int lanes, Xmm& d, const Xmm& s, uint64_t va);
+ 
+ // RSQRTPS: d = 1/sqrt(s) in all four float lanes (see above). No flags:
+ // ±0 and denormals give ±inf, negative values the default NaN, +inf +0,
+@@ -95,11 +88,6 @@ uint32_t CvtToI32(Ctx& c, bool dbl, const Xmm& s, bool truncate, uint64_t va);
+ // CVT(T)SS2SI / CVT(T)SD2SI to a 64-bit register.
+ uint64_t CvtToI64(Ctx& c, bool dbl, const Xmm& s, bool truncate, uint64_t va);
+ 
+-// MINSS/SD/PS/PD (max = false) and MAXSS/SD/PS/PD, lane-wise: d op s ? d : s.
+-// A NaN in either operand (invalid, quiet ones too) or equal values,
+-// zeros of either sign included, give s. Scalar forms keep d's upper lanes.
+-void MinMax(Ctx& c, bool max, bool dbl, int lanes, Xmm& d, const Xmm& s,
+-            uint64_t va);
+ 
+ // CVTSS2SD / CVTPS2PD (to_dbl, 1 or 2 lanes) and CVTSD2SS / CVTPD2PS.
+ // Scalar forms keep d's other lanes; CVTPD2PS zeroes its upper half.
+diff --git a/src/x86/sse_quiet.h b/src/x86/sse_quiet.h
+new file mode 100644
+index 0000000..d1d9cc7
+--- /dev/null
++++ b/src/x86/sse_quiet.h
+@@ -0,0 +1,196 @@
++#pragma once
++// The quiet fast path of SSE arithmetic on x86-64 hosts, inline in the
++// generated code (see sse.h; sse.cpp holds the full paths).
++//
++// The quiet case runs the guest's instruction as itself with no MXCSR
++// switch (LDMXCSR is microcoded and slow on AMD Zen): every lane's operands
++// and result are zero or normal, so DAZ and FTZ change nothing and no IE,
++// DE, ZE, OE or UE can arise; PE is already set in the guest's flags
++// (arithmetic and square root; MIN/MAX raise none); and guest and host
++// both round to nearest with every exception masked (the host is checked
++// every 4096 uses). Lanes are classified with integer code; only the lanes
++// the instruction writes count (lane 0 for scalar forms).
++
++#include <cstdint>
++#include <cstring>
++#include <type_traits>
++
++#include "x86/ctx.h"
++
++namespace recomp::sse {
++
++enum Op : uint8_t { kAdd, kSub, kMul, kDiv };
++
++#if defined(__x86_64__)
++// False under RECOMP_SOFT_SSE=1: everything goes the SoftFloat way.
++extern const bool kNativeSse;
++
++namespace quiet {
++
++typedef float V4 __attribute__((vector_size(16)));
++
++inline bool HostRoundsNearest() {
++  static thread_local uint32_t uses = 0, ok = 0;
++  if ((uses++ & 4095) == 0) {
++    uint32_t h;
++    asm volatile("stmxcsr %0" : "=m"(h));
++    ok = (h & 0x7F80) == 0x1F80;
++  }
++  return ok;
++}
++
++inline bool Ok(const Ctx& c, bool need_pe) {
++  return kNativeSse && (c.mxcsr & 0x7F80) == 0x1F80 && (!need_pe || (c.mxcsr & 0x20)) &&
++         HostRoundsNearest();
++}
++
++// Per-lane classes as bit masks (bit i: lane i).
++template <bool D>
++struct Lanes {
++  using U = std::conditional_t<D, uint64_t, uint32_t>;
++  static constexpr int kN = D ? 2 : 4;
++  static constexpr U kExp = D ? U(0x7FF0000000000000ull) : U(0x7F800000u);
++  static constexpr U kFrac = D ? U(0x000FFFFFFFFFFFFFull) : U(0x007FFFFFu);
++  U v[kN];
++  explicit Lanes(const void* p) { std::memcpy(v, p, 16); }
++  // NaN, infinite or denormal.
++  unsigned Special(int n) const {
++    unsigned m = 0;
++    for (int i = 0; i < n; i++) {
++      const U e = v[i] & kExp;
++      m |= unsigned(e == kExp || (e == 0 && (v[i] & kFrac))) << i;
++    }
++    return m;
++  }
++  unsigned Zero(int n) const {
++    unsigned m = 0;
++    for (int i = 0; i < n; i++) m |= unsigned(U(v[i] << 1) == 0) << i;
++    return m;
++  }
++  unsigned Neg(int n) const {
++    unsigned m = 0;
++    for (int i = 0; i < n; i++) m |= unsigned(v[i] >> (sizeof(U) * 8 - 1)) << i;
++    return m;
++  }
++};
++
++#define RECOMP_SSE_BARE(dv, sv, insn) asm(insn " %1, %0" : "+x"(dv) : "x"(sv))
++#define RECOMP_SSE_BARE2(dv, sv, dbl, sgl) \
++  do {                                     \
++    if constexpr (D)                       \
++      RECOMP_SSE_BARE(dv, sv, dbl);        \
++    else                                   \
++      RECOMP_SSE_BARE(dv, sv, sgl);        \
++  } while (0)
++
++template <bool D>
++[[gnu::always_inline]] inline bool Arith(Op op, bool scalar, Xmm& d, const Xmm& s) {
++  const int n = scalar ? 1 : Lanes<D>::kN;
++  const Lanes<D> a(d.b), b(s.b);
++  if (a.Special(n) | b.Special(n)) return false;
++  if (op == kDiv && b.Zero(n)) return false;  // ZE, or 0/0
++  V4 r, sv;
++  std::memcpy(&r, d.b, 16);
++  std::memcpy(&sv, s.b, 16);
++  switch (op << 1 | int(scalar)) {
++    case kAdd << 1 | 0: RECOMP_SSE_BARE2(r, sv, "addpd", "addps"); break;
++    case kAdd << 1 | 1: RECOMP_SSE_BARE2(r, sv, "addsd", "addss"); break;
++    case kSub << 1 | 0: RECOMP_SSE_BARE2(r, sv, "subpd", "subps"); break;
++    case kSub << 1 | 1: RECOMP_SSE_BARE2(r, sv, "subsd", "subss"); break;
++    case kMul << 1 | 0: RECOMP_SSE_BARE2(r, sv, "mulpd", "mulps"); break;
++    case kMul << 1 | 1: RECOMP_SSE_BARE2(r, sv, "mulsd", "mulss"); break;
++    case kDiv << 1 | 0: RECOMP_SSE_BARE2(r, sv, "divpd", "divps"); break;
++    default: RECOMP_SSE_BARE2(r, sv, "divsd", "divss"); break;
++  }
++  // Overflow (infinity) or a denormal result; a product or quotient of
++  // nonzero operands that came out zero underflowed.
++  const Lanes<D> o(&r);
++  if (o.Special(n) || (op >= kMul && (o.Zero(n) & ~(a.Zero(n) | b.Zero(n))))) return false;
++  std::memcpy(d.b, &r, 16);
++  return true;
++}
++
++template <bool D>
++[[gnu::always_inline]] inline bool Sqrt(bool scalar, Xmm& d, const Xmm& s) {
++  const int n = scalar ? 1 : Lanes<D>::kN;
++  const Lanes<D> b(s.b);
++  // Special operands, and negative nonzero ones (invalid).
++  if (b.Special(n) | (b.Neg(n) & ~b.Zero(n))) return false;
++  V4 dv, sv;
++  std::memcpy(&dv, d.b, 16);
++  std::memcpy(&sv, s.b, 16);
++  if (scalar)
++    RECOMP_SSE_BARE2(dv, sv, "sqrtsd", "sqrtss");
++  else
++    RECOMP_SSE_BARE2(dv, sv, "sqrtpd", "sqrtps");
++  std::memcpy(d.b, &dv, 16);
++  return true;
++}
++
++template <bool D>
++[[gnu::always_inline]] inline bool MinMax(bool max, bool scalar, Xmm& d, const Xmm& s) {
++  const int n = scalar ? 1 : Lanes<D>::kN;
++  if (Lanes<D>(d.b).Special(n) | Lanes<D>(s.b).Special(n)) return false;
++  V4 dv, sv;
++  std::memcpy(&dv, d.b, 16);
++  std::memcpy(&sv, s.b, 16);
++  switch (int(max) << 1 | int(scalar)) {
++    case 0: RECOMP_SSE_BARE2(dv, sv, "minpd", "minps"); break;
++    case 1: RECOMP_SSE_BARE2(dv, sv, "minsd", "minss"); break;
++    case 2: RECOMP_SSE_BARE2(dv, sv, "maxpd", "maxps"); break;
++    default: RECOMP_SSE_BARE2(dv, sv, "maxsd", "maxss"); break;
++  }
++  std::memcpy(d.b, &dv, 16);
++  return true;
++}
++
++#undef RECOMP_SSE_BARE2
++#undef RECOMP_SSE_BARE
++
++inline bool KnownLanes(bool dbl, int lanes) { return lanes == 1 || lanes == (dbl ? 2 : 4); }
++
++}  // namespace quiet
++#endif
++
++// The full paths (native with the guest's MXCSR, or SoftFloat), in sse.cpp.
++void ArithSlow(Ctx& c, Op op, bool dbl, int lanes, Xmm& d, const Xmm& s, uint64_t va);
++void SqrtSlow(Ctx& c, bool dbl, int lanes, Xmm& d, const Xmm& s, uint64_t va);
++void MinMaxSlow(Ctx& c, bool max, bool dbl, int lanes, Xmm& d, const Xmm& s, uint64_t va);
++
++// d = d op s, lane-wise: `lanes` lanes of double (dbl) or float. Scalar
++// forms pass lanes = 1 and keep the upper lanes of d.
++inline void Arith(Ctx& c, Op op, bool dbl, int lanes, Xmm& d, const Xmm& s, uint64_t va) {
++#if defined(__x86_64__)
++  if (quiet::KnownLanes(dbl, lanes) && quiet::Ok(c, true) &&
++      (dbl ? quiet::Arith<true>(op, lanes == 1, d, s) : quiet::Arith<false>(op, lanes == 1, d, s)))
++    return;
++#endif
++  ArithSlow(c, op, dbl, lanes, d, s, va);
++}
++
++// SQRTSD/SQRTSS/SQRTPD/SQRTPS: d = sqrt(s), lane-wise; scalar forms keep
++// the upper lanes of d.
++inline void Sqrt(Ctx& c, bool dbl, int lanes, Xmm& d, const Xmm& s, uint64_t va) {
++#if defined(__x86_64__)
++  if (quiet::KnownLanes(dbl, lanes) && quiet::Ok(c, true) &&
++      (dbl ? quiet::Sqrt<true>(lanes == 1, d, s) : quiet::Sqrt<false>(lanes == 1, d, s)))
++    return;
++#endif
++  SqrtSlow(c, dbl, lanes, d, s, va);
++}
++
++// MINSS/SD/PS/PD (max = false) and MAXSS/SD/PS/PD, lane-wise: d op s ? d : s.
++// A NaN in either operand (invalid, quiet ones too) or equal values,
++// zeros of either sign included, give s. Scalar forms keep d's upper lanes.
++inline void MinMax(Ctx& c, bool max, bool dbl, int lanes, Xmm& d, const Xmm& s,
++                   uint64_t va) {
++#if defined(__x86_64__)
++  if (quiet::KnownLanes(dbl, lanes) && quiet::Ok(c, false) &&
++      (dbl ? quiet::MinMax<true>(max, lanes == 1, d, s)
++           : quiet::MinMax<false>(max, lanes == 1, d, s)))
++    return;
++#endif
++  MinMaxSlow(c, max, dbl, lanes, d, s, va);
++}
++
++}  // namespace recomp::sse
+-- 
+2.51.0.windows.1
+

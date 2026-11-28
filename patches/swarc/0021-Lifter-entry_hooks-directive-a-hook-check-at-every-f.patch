@@ -1,0 +1,266 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: finalpantasy <finalpantasy@users.noreply.github.com>
+Date: Sun, 22 Nov 2026 20:08:25 -0500
+Subject: [PATCH 21/34] Lifter: entry_hooks directive, a hook check at every
+ function entry
+
+With the manifest line `entry_hooks`, each lifted function starts with
+LIFT_ENTRY_HOOK(row), which runs a hook from g_entry_hooks (generated
+table.cpp) in place of the body. recomp::SetEntryHook installs one and
+returns the previous hook, or a trampoline that skips the hook once, so
+hooks also catch direct calls between lifted functions. Off by default.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/x86/lifted.h             | 30 ++++++++++++++++
+ src/x86/lifted_table.cpp     | 67 ++++++++++++++++++++++++++++++++++--
+ tools/lifter_x86/emit.cpp    | 14 +++++++-
+ tools/lifter_x86/emit.h      |  3 +-
+ tools/lifter_x86/main.cpp    |  9 ++++-
+ tools/lifter_x86/program.cpp |  4 +++
+ tools/lifter_x86/program.h   |  4 +++
+ 7 files changed, 126 insertions(+), 5 deletions(-)
+
+diff --git a/src/x86/lifted.h b/src/x86/lifted.h
+index 167d8a2..dea21dc 100644
+--- a/src/x86/lifted.h
++++ b/src/x86/lifted.h
+@@ -5,6 +5,7 @@
+ // __builtin_* used here are compiler builtins, not x86 intrinsics.
+ 
+ #include <cstdint>
++#include <atomic>
+ #include <cstring>
+ 
+ #include "x86/crt_math.h"
+@@ -31,6 +32,22 @@ extern const uint32_t kLiftedFunctionCount;
+ // recomp_add_lifted compiles into the game's lifted code.
+ void RegisterLiftedFunctions(const LiftedFn* fns, uint32_t count);
+ 
++// Entry hooks (manifest `entry_hooks`). Each lifted function starts with
++// LIFT_ENTRY_HOOK(i), i its row in kLiftedFunctions: when slot i holds a
++// hook, the hook runs in place of the body, so it also catches the direct
++// calls between lifted functions that ReplaceDispatch misses.
++extern const bool kLiftedEntryHooks;
++extern std::atomic<GuestFn> g_entry_hooks[];
++// Row + 1 of the function whose next entry on this thread runs its body
++// despite the hook (set by the trampoline SetEntryHook hands out).
++extern thread_local uint32_t g_entry_skip;
++// Installs fn as the outermost entry hook of the lifted function at va.
++// *original receives what fn should call to run the function: the hook
++// installed before it, or a trampoline into the lifted body. False when
++// va is not a lifted entry or the game was lifted without entry hooks.
++// Defined in x86/lifted_table.cpp (the game's lifted code).
++bool SetEntryHook(uint64_t va, GuestFn fn, GuestFn* original);
++
+ // Thrown at manifest `resume` sites: the guest abandons the current call
+ // chain and continues at `target` in the frame whose EBP is `ebp` (SEH
+ // __except blocks, longjmp to a setjmp return point). Caught by the lifted
+@@ -679,6 +696,19 @@ bool Cas128(uint8_t* p, uint64_t* lo, uint64_t* hi, uint64_t new_lo, uint64_t ne
+   (void)FS, (void)GS;
+ #endif
+ 
++// First statement of a function lifted with entry hooks; see
++// SetEntryHook. Costs one load and an untaken branch without a hook.
++#define LIFT_ENTRY_HOOK(i)                                                    \
++  if (::recomp::GuestFn hook_ =                                               \
++          ::recomp::g_entry_hooks[i].load(std::memory_order_acquire))         \
++      [[unlikely]] {                                                          \
++    if (::recomp::g_entry_skip != (i) + 1u) {                                 \
++      hook_(c);                                                               \
++      return;                                                                 \
++    }                                                                         \
++    ::recomp::g_entry_skip = 0;                                               \
++  }
++
+ // Tail calls between lifted functions (all void(Ctx&)) are guaranteed
+ // where the compiler supports it.
+ #if defined(__clang__)
+diff --git a/src/x86/lifted_table.cpp b/src/x86/lifted_table.cpp
+index 28dc01d..e8a2169 100644
+--- a/src/x86/lifted_table.cpp
++++ b/src/x86/lifted_table.cpp
+@@ -1,12 +1,75 @@
+ // Registers the lifter's function table (generated/table.cpp) with the
+-// runtime before main(). Compiled into each game's lifted code by
+-// recomp_add_lifted (CMakeLists.txt), not into the runtime library.
++// runtime before main(), and installs entry hooks into it. Compiled into
++// each game's lifted code by recomp_add_lifted (CMakeLists.txt), not into
++// the runtime library.
++
++#include <algorithm>
++#include <array>
++#include <mutex>
++#include <utility>
+ 
+ #include "x86/lifted.h"
+ 
+ namespace recomp {
++
++thread_local uint32_t g_entry_skip = 0;
++
+ namespace {
+ const bool kRegistered =
+     (RegisterLiftedFunctions(kLiftedFunctions, kLiftedFunctionCount), true);
++
++// A module's original for a hooked function must run the function without
++// its hook once. GuestFn takes no closure, so each hooked function gets one
++// of a fixed pool of trampolines; trampoline K sets the skip for its row and
++// calls the table entry (the project's wrapper for a `replace` function,
++// whose lifted body then takes the skip).
++constexpr uint32_t kMaxHooked = 1024;
++uint32_t g_tramp_row[kMaxHooked];
++uint32_t g_tramp_used = 0;
++std::mutex g_tramp_mu;
++
++template <uint32_t K>
++void Trampoline(Ctx& c) {
++  const uint32_t row = g_tramp_row[K];
++  g_entry_skip = row + 1;
++  kLiftedFunctions[row].fn(c);
++}
++
++template <uint32_t... K>
++constexpr std::array<GuestFn, sizeof...(K)> MakeTrampolines(
++    std::integer_sequence<uint32_t, K...>) {
++  return {&Trampoline<K>...};
++}
++constexpr auto kTrampolines =
++    MakeTrampolines(std::make_integer_sequence<uint32_t, kMaxHooked>{});
++
+ }  // namespace
++
++bool SetEntryHook(uint64_t va, GuestFn fn, GuestFn* original) {
++  if (!kLiftedEntryHooks || !fn) return false;
++  const LiftedFn* end = kLiftedFunctions + kLiftedFunctionCount;
++  const LiftedFn* it = std::lower_bound(
++      kLiftedFunctions, end, va,
++      [](const LiftedFn& f, uint64_t v) { return f.va < v; });
++  if (it == end || it->va != va) return false;
++  const uint32_t row = static_cast<uint32_t>(it - kLiftedFunctions);
++
++  std::lock_guard<std::mutex> lock(g_tramp_mu);
++  GuestFn prev = g_entry_hooks[row].load(std::memory_order_acquire);
++  GuestFn orig = prev;
++  if (!prev) {
++    // First hook on this row: find or take its trampoline.
++    uint32_t k = 0;
++    while (k < g_tramp_used && g_tramp_row[k] != row) ++k;
++    if (k == g_tramp_used) {
++      if (g_tramp_used == kMaxHooked) return false;
++      g_tramp_row[g_tramp_used++] = row;
++    }
++    orig = kTrampolines[k];
++  }
++  if (original) *original = orig;
++  g_entry_hooks[row].store(fn, std::memory_order_release);
++  return true;
++}
++
+ }  // namespace recomp
+diff --git a/tools/lifter_x86/emit.cpp b/tools/lifter_x86/emit.cpp
+index 90c6d3f..092abe9 100644
+--- a/tools/lifter_x86/emit.cpp
++++ b/tools/lifter_x86/emit.cpp
+@@ -3833,6 +3833,12 @@ void InsnEmitter::Emit() {
+ 
+ std::string FnName(uint64_t va) { return Fmt("f_%08llX", U(va)); }
+ 
++Emitter::Emitter(const Program& p, const Decoder& dec) : p_(p), dec_(dec) {
++  if (!p_.entry_hooks) return;
++  uint32_t i = 0;
++  for (uint64_t e : p_.entries) entry_index_.emplace_hint(entry_index_.end(), e, i++);
++}
++
+ void Emitter::EmitFunction(const Function& f, std::string* out,
+                            std::set<uint64_t>* refs, EmitStats* stats) {
+   std::string& o = *out;
+@@ -3849,7 +3855,13 @@ void Emitter::EmitFunction(const Function& f, std::string* out,
+          Hex(host->second.module_base) + "); }\n";
+   }
+   o += "void " + FnName(f.entry) + (p_.replaced.count(f.entry) ? "_lifted" : "") +
+-       "(::recomp::Ctx& c) {\n  LIFT_ENTER\n";
++       "(::recomp::Ctx& c) {\n";
++  // Before LIFT_ENTER: a hook takes c as the caller left it.
++  if (p_.entry_hooks) {
++    auto ei = entry_index_.find(f.entry);
++    if (ei != entry_index_.end()) o += Fmt("  LIFT_ENTRY_HOOK(%u);\n", ei->second);
++  }
++  o += "  LIFT_ENTER\n";
+   // Functions that register an SEH frame (32-bit: write fs:[0]) can be
+   // resumed into by their __except blocks, and setjmp callers by longjmp;
+   // see GuestResume.
+diff --git a/tools/lifter_x86/emit.h b/tools/lifter_x86/emit.h
+index 3b08500..febf5de 100644
+--- a/tools/lifter_x86/emit.h
++++ b/tools/lifter_x86/emit.h
+@@ -21,7 +21,7 @@ std::string FnName(uint64_t va);
+ 
+ class Emitter {
+  public:
+-  Emitter(const Program& p, const Decoder& dec) : p_(p), dec_(dec) {}
++  Emitter(const Program& p, const Decoder& dec);
+ 
+   // Appends the function definition to *out. Every function it references
+   // (calls, tail calls) is added to *refs for forward declarations.
+@@ -37,6 +37,7 @@ class Emitter {
+                   std::set<uint64_t>* refs, EmitStats* stats) const;
+   const Program& p_;
+   const Decoder& dec_;
++  std::map<uint64_t, uint32_t> entry_index_;  // entry -> index in p_.entries
+ };
+ 
+ }  // namespace lifter
+diff --git a/tools/lifter_x86/main.cpp b/tools/lifter_x86/main.cpp
+index cc38805..399f06c 100644
+--- a/tools/lifter_x86/main.cpp
++++ b/tools/lifter_x86/main.cpp
+@@ -378,7 +378,14 @@ int main(int argc, char** argv) {
+     table += buf;
+   }
+   table += "};\nextern const uint32_t kLiftedFunctionCount = " +
+-           std::to_string(p.entries.size()) + ";\n}  // namespace recomp\n";
++           std::to_string(p.entries.size()) + ";\n";
++  // Entry hooks (manifest `entry_hooks`), one slot per table row; a single
++  // unused slot when the manifest has none, so SetEntryHook always links.
++  table += "extern const bool kLiftedEntryHooks = " +
++           std::string(p.entry_hooks ? "true" : "false") +
++           ";\nstd::atomic<GuestFn> g_entry_hooks[" +
++           std::to_string(p.entry_hooks ? p.entries.size() : 1) +
++           "];\n}  // namespace recomp\n";
+   files["table.cpp"] = table;
+ 
+   // Functions the manifest hands to a shared native implementation
+diff --git a/tools/lifter_x86/program.cpp b/tools/lifter_x86/program.cpp
+index c76546a..84348cd 100644
+--- a/tools/lifter_x86/program.cpp
++++ b/tools/lifter_x86/program.cpp
+@@ -143,6 +143,10 @@ bool Program::LoadManifest(const std::string& path, std::string* err) {
+     std::istringstream in(line);
+     std::string kind, va_s, name;
+     if (!(in >> kind)) continue;
++    if (kind == "entry_hooks") {  // no address: see Program::entry_hooks
++      entry_hooks = true;
++      continue;
++    }
+     if (!(in >> va_s)) {
+       *err = path + ":" + std::to_string(no) + ": missing address";
+       return false;
+diff --git a/tools/lifter_x86/program.h b/tools/lifter_x86/program.h
+index 7104a4d..f122bd1 100644
+--- a/tools/lifter_x86/program.h
++++ b/tools/lifter_x86/program.h
+@@ -58,6 +58,10 @@ struct Program {
+   recomp::GuestMemory mem;
+   std::vector<Module> modules;  // [0] is the EXE
+   bool x64 = false;  // x64 images (all modules are one or the other)
++  // manifest `entry_hooks`: every lifted function starts with
++  // LIFT_ENTRY_HOOK(<index in entries>), so a runtime hook (SetEntryHook)
++  // catches direct calls between lifted functions too.
++  bool entry_hooks = false;
+ 
+   std::set<uint64_t> entries;                 // function entry points
+   // Entries known only from pointer scans (a dword in data or an
+-- 
+2.51.0.windows.1
+

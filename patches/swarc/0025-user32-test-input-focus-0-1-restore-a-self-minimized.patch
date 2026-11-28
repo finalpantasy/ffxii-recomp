@@ -1,0 +1,86 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: finalpantasy <finalpantasy@users.noreply.github.com>
+Date: Thu, 26 Nov 2026 10:52:04 -0500
+Subject: [PATCH 25/34] user32: test-input focus 0/1, restore a self-minimized
+ window on focus, TRACE_ACTIVATE
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ platforms/win32/src/win32/user32_window.cpp | 32 ++++++++++++++++++++-
+ 1 file changed, 31 insertions(+), 1 deletion(-)
+
+diff --git a/platforms/win32/src/win32/user32_window.cpp b/platforms/win32/src/win32/user32_window.cpp
+index e8006fd..dec2acd 100644
+--- a/platforms/win32/src/win32/user32_window.cpp
++++ b/platforms/win32/src/win32/user32_window.cpp
+@@ -427,6 +427,7 @@ void ActivateApp(uint32_t hwnd, bool active) {
+     }
+   }
+   WatchdogAppActive(active);
++  if (Env("TRACE_ACTIVATE")) WarnF("activate: hwnd %X %s\n", hwnd, active ? "gained" : "lost");
+   Post(hwnd, WM_ACTIVATEAPP, active ? 1 : 0, 0);
+   Post(hwnd, WM_ACTIVATE, active ? 1 : 0, 0);
+   Post(hwnd, active ? WM_SETFOCUS : WM_KILLFOCUS, 0, 0);
+@@ -444,8 +445,29 @@ void HandleSdlEvent(const SDL_Event& e) {
+       if (uint32_t h = HwndForSdl(e.window.windowID)) Post(h, WM_CLOSE, 0, 0);
+       break;
+     case SDL_EVENT_WINDOW_FOCUS_GAINED:
++    case SDL_EVENT_WINDOW_RESTORED:
+       AttachClip();
+-      if (uint32_t h = HwndForSdl(e.window.windowID)) ActivateApp(h, true);
++      if (uint32_t h = HwndForSdl(e.window.windowID)) {
++        // The user brought the window back (taskbar, alt-tab). Windows
++        // restores a minimized window then and IsIconic turns false; the
++        // game minimizes itself on deactivation and keeps its pause up
++        // until it sees the window restored, so do the same here.
++        bool was_min = false;
++        int cw = 0, ch = 0;
++        {
++          std::lock_guard<std::recursive_mutex> l(g_mu);
++          if (Window* w = Win(h)) {
++            was_min = w->minimized;
++            w->minimized = false;
++            cw = w->w;
++            ch = w->h;
++            if (was_min && w->sdl && (SDL_GetWindowFlags(w->sdl) & SDL_WINDOW_MINIMIZED))
++              SDL_RestoreWindow(w->sdl);
++          }
++        }
++        if (was_min) Post(h, WM_SIZE, 0, MkLparam(cw, ch));  // SIZE_RESTORED
++        if (e.type == SDL_EVENT_WINDOW_FOCUS_GAINED) ActivateApp(h, true);
++      }
+       break;
+     case SDL_EVENT_WINDOW_FOCUS_LOST:
+       if (uint32_t h = HwndForSdl(e.window.windowID)) {
+@@ -1067,6 +1089,11 @@ void InjectTestInput() {
+         waits.push_back({t, a, n >= 4 ? b : "", n >= 5 ? std::atof(d) : 120.0});
+       } else if (c == "skipto" && n >= 4 && std::atof(a) > t) {
+         waits.push_back({t, b, n >= 5 ? d : "", 0, std::atof(a)});
++      } else if (c == "focus" && n >= 3) {
++        // "focus 0" / "focus 1": the window loses or regains focus (alt-tab).
++        SDL_Event e{};
++        e.type = std::atoi(a) ? SDL_EVENT_WINDOW_FOCUS_GAINED : SDL_EVENT_WINDOW_FOCUS_LOST;
++        q.push_back({t, e});
+       } else if (c == "key" && n >= 3) {
+         SDL_Scancode sc = SDL_GetScancodeFromName(a);
+         if (sc == SDL_SCANCODE_UNKNOWN) {
+@@ -1200,6 +1227,8 @@ void InjectTestInput() {
+       e.motion.windowID = id;
+     } else if (e.type == SDL_EVENT_KEY_DOWN || e.type == SDL_EVENT_KEY_UP) {
+       e.key.windowID = id;
++    } else if (e.type == SDL_EVENT_WINDOW_FOCUS_GAINED || e.type == SDL_EVENT_WINDOW_FOCUS_LOST) {
++      e.window.windowID = id;
+     } else {
+       e.button.windowID = id;
+     }
+@@ -1605,6 +1634,7 @@ HLE("user32.dll", IsWindow, 1) {
+ 
+ HLE64("user32.dll", ShowWindow, 2) {
+   uint32_t hwnd = Arg(c, 0), cmd = Arg(c, 1);
++  if (Env("TRACE_ACTIVATE")) WarnF("activate: ShowWindow(%X, %u)\n", hwnd, cmd);
+   bool was, show = cmd != 0;  // SW_HIDE = 0
+   // SW_SHOWMINIMIZED, SW_MINIMIZE, SW_SHOWMINNOACTIVE
+   bool minimize = cmd == 2 || cmd == 6 || cmd == 7;
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,91 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: finalpantasy <finalpantasy@users.noreply.github.com>
+Date: Sun, 22 Nov 2026 06:48:14 -0500
+Subject: [PATCH 11/34] D3D11: optional debug hook on buffer uploads
+
+g_buffer_upload_hook, null by default, receives the bytes of each buffer
+upload (Unmap of a written map, UpdateSubresource of a buffer) with the
+buffer's bind flags and byte width.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ platforms/win32/src/win32/d3d11.cpp | 24 +++++++++++++++++++++++-
+ platforms/win32/src/win32/d3d11.h   |  7 +++++++
+ 2 files changed, 30 insertions(+), 1 deletion(-)
+
+diff --git a/platforms/win32/src/win32/d3d11.cpp b/platforms/win32/src/win32/d3d11.cpp
+index 885e3b5..fc24e14 100644
+--- a/platforms/win32/src/win32/d3d11.cpp
++++ b/platforms/win32/src/win32/d3d11.cpp
+@@ -20,6 +20,7 @@
+ #include "x86/runtime.h"
+ 
+ namespace recomp::hle {
++BufferUploadHook g_buffer_upload_hook = nullptr;
+ namespace {
+ 
+ constexpr const char* kDll = "d3d11.dll";
+@@ -418,6 +419,14 @@ uint32_t Map(Ctx& c) {
+   return 0;
+ }
+ 
++bool BufferDesc(ID3D11Resource* resource, D3D11_BUFFER_DESC* desc) {
++  D3D11_RESOURCE_DIMENSION dimension = D3D11_RESOURCE_DIMENSION_UNKNOWN;
++  resource->GetType(&dimension);
++  if (dimension != D3D11_RESOURCE_DIMENSION_BUFFER) return false;
++  static_cast<ID3D11Buffer*>(resource)->GetDesc(desc);
++  return true;
++}
++
+ uint32_t Unmap(Ctx& c) {
+   ID3D11DeviceContext* context = DxvkHost<ID3D11DeviceContext>(Arg(c, 0));
+   ID3D11Resource* resource = DxvkHost<ID3D11Resource>(Arg(c, 1));
+@@ -427,8 +436,13 @@ uint32_t Unmap(Ctx& c) {
+   auto it = object->mappings.find(subresource);
+   if (it != object->mappings.end()) {
+     const DxvkMapping mapping = it->second;
+-    if (mapping.type != D3D11_MAP_READ)
++    if (mapping.type != D3D11_MAP_READ) {
+       std::memcpy(mapping.host_data, GPtr(mapping.guest_data), mapping.size);
++      D3D11_BUFFER_DESC desc{};
++      if (g_buffer_upload_hook && BufferDesc(resource, &desc))
++        g_buffer_upload_hook(GPtr(mapping.guest_data), mapping.size, desc.BindFlags,
++                             desc.ByteWidth);
++    }
+     object->mappings.erase(it);
+     context->Unmap(resource, subresource);
+     HeapFreeProcess(mapping.guest_data);
+@@ -1291,6 +1305,14 @@ HLE_NAMED_X(kDll, "ID3D11DeviceContext::CopySubresourceRegion", D3dCopySubresour
+ }
+ HLE_NAMED_X(kDll, "ID3D11DeviceContext::UpdateSubresource", D3dUpdateSubresource,
+             kCdecl, true) {
++  if (g_buffer_upload_hook && Arg(c, 4)) {
++    D3D11_BUFFER_DESC desc{};
++    if (BufferDesc(DxvkHost<ID3D11Resource>(Arg(c, 1)), &desc)) {
++      const auto* box = reinterpret_cast<const D3D11_BOX*>(Ptr(Arg(c, 3)));
++      const size_t size = box ? box->right - box->left : desc.ByteWidth;
++      g_buffer_upload_hook(Ptr(Arg(c, 4)), size, desc.BindFlags, desc.ByteWidth);
++    }
++  }
+   DxvkHost<ID3D11DeviceContext>(Arg(c, 0))->UpdateSubresource(
+       DxvkHost<ID3D11Resource>(Arg(c, 1)), uint32_t(Arg(c, 2)),
+       reinterpret_cast<const D3D11_BOX*>(Ptr(Arg(c, 3))), Ptr(Arg(c, 4)), uint32_t(Arg(c, 5)),
+diff --git a/platforms/win32/src/win32/d3d11.h b/platforms/win32/src/win32/d3d11.h
+index 8b59df8..e1a1391 100644
+--- a/platforms/win32/src/win32/d3d11.h
++++ b/platforms/win32/src/win32/d3d11.h
+@@ -8,4 +8,11 @@ namespace recomp::hle {
+ 
+ bool GuestDxgiSwapChainDesc(gaddr guest, DXGI_SWAP_CHAIN_DESC* out);
+ 
++// Debug hook, null by default: called with the bytes of every buffer upload
++// (Unmap of a written buffer map, UpdateSubresource of a buffer), on the
++// thread that makes it, with the buffer's bind flags and byte width.
++using BufferUploadHook = void (*)(const void* data, size_t size, uint32_t bind_flags,
++                                  uint32_t byte_width);
++extern BufferUploadHook g_buffer_upload_hook;
++
+ }  // namespace recomp::hle
+-- 
+2.51.0.windows.1
+

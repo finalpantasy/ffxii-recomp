@@ -1,0 +1,369 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: finalpantasy <finalpantasy@users.noreply.github.com>
+Date: Sun, 22 Nov 2026 08:33:43 -0500
+Subject: [PATCH 12/34] Inline CRT math imports in the lifter; import and map
+ stats; POSIX ExeDir
+
+The manifest `crt` directive now also takes memcmp and the float math the
+game calls through import stubs (sqrtf, sqrt, floorf, ceilf, fmodf, sinf,
+cosf, tanf, asinf, acosf, expf, logf, atan2f, powf), plus _isnan and
+_finite, which are called straight through their import slots. Exact
+functions inline as std::; the rest call recomp::crt (x86/crt_math.h),
+the same correctly rounded and errno path as the HLE handlers.
+
+FFXII_IMPORT_STATS (hle.cpp) logs the 40 most-called imports every 30 s;
+RECOMP_D3D_MAP_STATS (d3d11.cpp) counts Map types per resource kind.
+ExeDir is now defined on POSIX hosts too.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ platforms/win32/src/win32/d3d11.cpp | 33 ++++++++++++++++++
+ platforms/win32/src/win32/ucrt.cpp  | 19 ++++++++++
+ src/runtime/platform.cpp            | 16 +++++++++
+ src/runtime/platform.h              |  2 --
+ src/x86/crt_math.h                  | 17 +++++++++
+ src/x86/hle.cpp                     | 42 +++++++++++++++++++++-
+ src/x86/lifted.h                    |  1 +
+ tools/lifter_x86/emit.cpp           | 54 ++++++++++++++++++++++++-----
+ tools/lifter_x86/program.cpp        |  8 +++--
+ 9 files changed, 179 insertions(+), 13 deletions(-)
+ create mode 100644 src/x86/crt_math.h
+
+diff --git a/platforms/win32/src/win32/d3d11.cpp b/platforms/win32/src/win32/d3d11.cpp
+index fc24e14..ecaa9e6 100644
+--- a/platforms/win32/src/win32/d3d11.cpp
++++ b/platforms/win32/src/win32/d3d11.cpp
+@@ -4,9 +4,11 @@
+ #include <cstdio>
+ #include <cstdlib>
+ #include <cstring>
++#include <map>
+ #include <memory>
+ #include <mutex>
+ #include <set>
++#include <tuple>
+ #include <vector>
+ 
+ #include <d3d11.h>
+@@ -386,6 +388,36 @@ size_t MappedSize(ID3D11Resource* resource, uint32_t subresource,
+   return 0;
+ }
+ 
++// RECOMP_D3D_MAP_STATS=1: every 20,000 maps, log the count per (resource
++// dimension, bind flags, map type).
++void CountMap(ID3D11Resource* resource, D3D11_MAP type) {
++  static const bool on = std::getenv("RECOMP_D3D_MAP_STATS") != nullptr;
++  if (!on) return;
++  static std::mutex mu;
++  static std::map<std::tuple<int, uint32_t, int>, uint64_t> counts;
++  static uint64_t total = 0;
++  D3D11_RESOURCE_DIMENSION dim = D3D11_RESOURCE_DIMENSION_UNKNOWN;
++  resource->GetType(&dim);
++  uint32_t bind = 0;
++  if (dim == D3D11_RESOURCE_DIMENSION_BUFFER) {
++    D3D11_BUFFER_DESC desc{};
++    static_cast<ID3D11Buffer*>(resource)->GetDesc(&desc);
++    bind = desc.BindFlags;
++  } else if (dim == D3D11_RESOURCE_DIMENSION_TEXTURE2D) {
++    D3D11_TEXTURE2D_DESC desc{};
++    static_cast<ID3D11Texture2D*>(resource)->GetDesc(&desc);
++    bind = desc.BindFlags;
++  }
++  std::lock_guard<std::mutex> lock(mu);
++  ++counts[{int(dim), bind, int(type)}];
++  if (++total % 20000) return;
++  std::fprintf(stderr, "[d3d11] maps so far %llu:", (unsigned long long)total);
++  for (auto& [k, n] : counts)
++    std::fprintf(stderr, " dim%d/bind0x%x/type%d=%llu", std::get<0>(k), std::get<1>(k),
++                 std::get<2>(k), (unsigned long long)n);
++  std::fprintf(stderr, "\n");
++}
++
+ uint32_t Map(Ctx& c) {
+   ID3D11DeviceContext* context = DxvkHost<ID3D11DeviceContext>(Arg(c, 0));
+   ID3D11Resource* resource = DxvkHost<ID3D11Resource>(Arg(c, 1));
+@@ -393,6 +425,7 @@ uint32_t Map(Ctx& c) {
+   if (!context || !resource || !out) return kEInvalidArg;
+   D3D11_MAPPED_SUBRESOURCE mapped{};
+   D3D11_MAP type = D3D11_MAP(uint32_t(Arg(c, 3)));
++  CountMap(resource, type);
+   HRESULT hr = context->Map(resource, uint32_t(Arg(c, 2)), type, uint32_t(Arg(c, 4)), &mapped);
+   if (FAILED(hr)) return uint32_t(hr);
+   size_t size = MappedSize(resource, uint32_t(Arg(c, 2)), mapped);
+diff --git a/platforms/win32/src/win32/ucrt.cpp b/platforms/win32/src/win32/ucrt.cpp
+index 5c23025..f00f140 100644
+--- a/platforms/win32/src/win32/ucrt.cpp
++++ b/platforms/win32/src/win32/ucrt.cpp
+@@ -23,6 +23,7 @@
+ #include "win32/kernel32_state.h"
+ #include "win32/ucrt.h"
+ #include "win32/win32.h"
++#include "x86/crt_math.h"
+ #include "x86/runtime.h"
+ 
+ namespace recomp::hle {
+@@ -1127,3 +1128,21 @@ HLE64("ucrtbase.dll", _fdtest, kCdecl) {
+ HLE64("ucrtbase.dll", _dsign, kCdecl) { return std::signbit(ArgD(c, 0)) ? 0x8000 : 0; }
+ 
+ }  // namespace recomp::hle
++
++// The same functions for the lifter's inline `crt` calls (x86/crt_math.h).
++namespace recomp::crt {
++#define RECOMP_CRT_F1(Fn, name)                                                \
++  float Fn(float x) {                                                          \
++    return ::recomp::hle::WithErrno<float>([&] { return ::recomp::hle::cr_##name(x); }); \
++  }
++RECOMP_CRT_F1(Sinf, sinf)
++RECOMP_CRT_F1(Cosf, cosf)
++RECOMP_CRT_F1(Tanf, tanf)
++RECOMP_CRT_F1(Asinf, asinf)
++RECOMP_CRT_F1(Acosf, acosf)
++RECOMP_CRT_F1(Expf, expf)
++RECOMP_CRT_F1(Logf, logf)
++#undef RECOMP_CRT_F1
++float Atan2f(float y, float x) { return ::recomp::hle::WithErrno<float>([&] { return ::recomp::hle::cr_atan2f(y, x); }); }
++float Powf(float x, float y) { return ::recomp::hle::WithErrno<float>([&] { return ::recomp::hle::cr_powf(x, y); }); }
++}  // namespace recomp::crt
+diff --git a/src/runtime/platform.cpp b/src/runtime/platform.cpp
+index c2b7aeb..7392c79 100644
+--- a/src/runtime/platform.cpp
++++ b/src/runtime/platform.cpp
+@@ -23,6 +23,7 @@
+ #include <mach/mach.h>
+ #include <mach/mach_time.h>
+ #include <mach/thread_policy.h>
++#include <mach-o/dyld.h>
+ #include <pthread.h>
+ #else
+ #include <sys/prctl.h>
+@@ -281,4 +282,19 @@ bool RedirectToCall(void* uc, void (*fn)()) {
+ #endif
+ }
+ 
++std::string ExeDir() {
++  char buf[4096];
++#if defined(__APPLE__)
++  uint32_t n = sizeof buf;
++  if (_NSGetExecutablePath(buf, &n) != 0) return ".";
++  std::string p = buf;
++#else
++  const ssize_t n = readlink("/proc/self/exe", buf, sizeof buf - 1);
++  if (n <= 0) return ".";
++  std::string p(buf, size_t(n));
++#endif
++  const size_t slash = p.rfind('/');
++  return slash == std::string::npos ? std::string(".") : p.substr(0, slash ? slash : 1);
++}
++
+ }  // namespace recomp::platform
+diff --git a/src/runtime/platform.h b/src/runtime/platform.h
+index 7bb1273..78bc8ac 100644
+--- a/src/runtime/platform.h
++++ b/src/runtime/platform.h
+@@ -47,11 +47,9 @@ inline constexpr const char* kUserDataDir = "/Library/Application Support/";
+ inline constexpr const char* kUserDataDir = "/.local/share/";
+ #endif
+ 
+-#if defined(_WIN32)
+ // The directory of the running executable, with '/' separators and no
+ // trailing one (portable builds keep their data there).
+ std::string ExeDir();
+-#endif
+ 
+ // ---- floating point
+ // Why this thread's floating-point environment is not the default one the
+diff --git a/src/x86/crt_math.h b/src/x86/crt_math.h
+new file mode 100644
+index 0000000..35e84e5
+--- /dev/null
++++ b/src/x86/crt_math.h
+@@ -0,0 +1,17 @@
++#pragma once
++// CRT math that the lifter emits inline at calls to an import (manifest
++// `crt`), with the same results and errno as the HLE handlers: correctly
++// rounded (CORE-MATH) where the result is not exact. Defined by the
++// platform's CRT layer (platforms/win32/src/win32/ucrt.cpp).
++
++namespace recomp::crt {
++float Sinf(float);
++float Cosf(float);
++float Tanf(float);
++float Asinf(float);
++float Acosf(float);
++float Expf(float);
++float Logf(float);
++float Atan2f(float, float);
++float Powf(float, float);
++}  // namespace recomp::crt
+diff --git a/src/x86/hle.cpp b/src/x86/hle.cpp
+index 1dd579a..cf7f273 100644
+--- a/src/x86/hle.cpp
++++ b/src/x86/hle.cpp
+@@ -138,13 +138,53 @@ bool HasHandler(const std::string& lib, const std::string& name) {
+   return Registry().count({lib, name}) != 0;
+ }
+ 
++namespace {
++// <ID>_IMPORT_STATS=1: count calls per import slot and, every 30 s, log the
++// 40 most called imports with their calls per second since the last report.
++std::atomic<uint64_t> g_import_calls[kMaxSlots];
++void ImportStats(size_t idx) {
++  static const bool on = Env("IMPORT_STATS") != nullptr;
++  if (!on) return;
++  g_import_calls[idx].fetch_add(1, std::memory_order_relaxed);
++  using clock = std::chrono::steady_clock;
++  static std::atomic<int64_t> next{0};
++  const int64_t now = clock::now().time_since_epoch().count();
++  int64_t due = next.load(std::memory_order_relaxed);
++  if (due == 0) {
++    next.compare_exchange_strong(due, now + std::chrono::duration_cast<clock::duration>(
++                                                 std::chrono::seconds(30)).count());
++    return;
++  }
++  if (now < due || !next.compare_exchange_strong(
++                       due, now + std::chrono::duration_cast<clock::duration>(
++                                      std::chrono::seconds(30)).count()))
++    return;
++  static std::vector<uint64_t> last(kMaxSlots);
++  std::vector<std::pair<uint64_t, size_t>> rows;
++  for (size_t i = 0; i < kMaxSlots; i++) {
++    const uint64_t v = g_import_calls[i].load(std::memory_order_relaxed);
++    if (v != last[i]) rows.push_back({v - last[i], i});
++    last[i] = v;
++  }
++  std::sort(rows.rbegin(), rows.rend());
++  std::fprintf(stderr, "[imports] calls per second over the last 30 s:\n");
++  for (size_t k = 0; k < rows.size() && k < 40; k++) {
++    const Slot* s = g_slot_table[rows[k].second].load(std::memory_order_acquire);
++    std::fprintf(stderr, "[imports]   %10.1f %s!%s\n", rows[k].first / 30.0,
++                 s ? s->dll.c_str() : "?", s ? s->name.c_str() : "?");
++  }
++}
++}  // namespace
++
+ void CallThunk(Ctx& c, gaddr thunk) {
+   const bool x64 = g_proc->x64;
+   const gaddr off = thunk - ThunkBase();
+   size_t idx = off / kThunkStride;
+   const Slot* s = nullptr;
+-  if (off % kThunkStride == 0 && idx < kMaxSlots)
++  if (off % kThunkStride == 0 && idx < kMaxSlots) {
+     s = g_slot_table[idx].load(std::memory_order_acquire);
++    ImportStats(idx);
++  }
+   const unsigned long long ret = x64 ? Rd64(c.rsp) : Rd32(c.esp);
+   if (!s)
+     FatalF("call to unknown thunk %08llX (return address %08llX)",
+diff --git a/src/x86/lifted.h b/src/x86/lifted.h
+index 3245c4e..167d8a2 100644
+--- a/src/x86/lifted.h
++++ b/src/x86/lifted.h
+@@ -7,6 +7,7 @@
+ #include <cstdint>
+ #include <cstring>
+ 
++#include "x86/crt_math.h"
+ #include "x86/ctx.h"
+ #include "x86/mmx.h"
+ #include "x86/sse.h"
+diff --git a/tools/lifter_x86/emit.cpp b/tools/lifter_x86/emit.cpp
+index 1ef0bad..90c6d3f 100644
+--- a/tools/lifter_x86/emit.cpp
++++ b/tools/lifter_x86/emit.cpp
+@@ -609,6 +609,41 @@ class InsnEmitter {
+   bool IsXmm(int i) const {
+     return xsub_.count(i) || (IsReg(i) && XmmIndex(Op(i).reg.value) >= 0);
+   }
++  // A call to a CRT import (manifest `crt`): the HLE handler's host work,
++  // inline, with no spill, push or dispatch. The volatile registers the
++  // real function may clobber keep their values. Float arguments and
++  // results are in the low lanes of xmm0 and xmm1 (Win64).
++  void EmitCrt(const std::string& n) {
++    if (n == "memset") {
++      L("std::memset(B + rcx, int(uint8_t(rdx)), size_t(r8));");
++      L("rax = rcx;");
++    } else if (n == "memcpy" || n == "memmove") {
++      L("std::memmove(B + rcx, B + rdx, size_t(r8));");
++      L("rax = rcx;");
++    } else if (n == "memcmp") {
++      L("{ const int r = std::memcmp(B + rcx, B + rdx, size_t(r8)); "
++        "rax = uint32_t(r < 0 ? -1 : r > 0 ? 1 : 0); }");
++    } else if (n == "sqrt") {
++      L("{ double x; std::memcpy(&x, c.xmm[0].b, 8); x = std::sqrt(x); "
++        "std::memcpy(c.xmm[0].b, &x, 8); }");
++    } else if (n == "_isnan" || n == "_finite") {
++      L(Fmt("{ double x; std::memcpy(&x, c.xmm[0].b, 8); rax = std::%s(x) ? 1 : 0; }",
++            n == "_isnan" ? "isnan" : "isfinite"));
++    } else {
++      static const std::map<std::string, std::string> kF = {
++          {"sqrtf", "std::sqrt(x)"},          {"floorf", "std::floor(x)"},
++          {"ceilf", "std::ceil(x)"},          {"fmodf", "std::fmod(x, y)"},
++          {"sinf", "::recomp::crt::Sinf(x)"}, {"cosf", "::recomp::crt::Cosf(x)"},
++          {"tanf", "::recomp::crt::Tanf(x)"}, {"asinf", "::recomp::crt::Asinf(x)"},
++          {"acosf", "::recomp::crt::Acosf(x)"}, {"expf", "::recomp::crt::Expf(x)"},
++          {"logf", "::recomp::crt::Logf(x)"}, {"atan2f", "::recomp::crt::Atan2f(x, y)"},
++          {"powf", "::recomp::crt::Powf(x, y)"}};
++      const std::string& e = kF.at(n);
++      const bool two = e.find(", y") != std::string::npos;
++      L(Fmt("{ float x%s; std::memcpy(&x, c.xmm[0].b, 4);%s x = %s; std::memcpy(c.xmm[0].b, &x, 4); }",
++            two ? ", y" : "", two ? " std::memcpy(&y, c.xmm[1].b, 4);" : "", e.c_str()));
++    }
++  }
+   std::string XmmRef(int i) const {
+     auto it = xsub_.find(i);
+     if (it != xsub_.end()) return it->second;
+@@ -2965,14 +3000,7 @@ void InsnEmitter::Emit64() {
+       if (IsImm(0)) {
+         uint64_t t = RelTarget(in_);
+         if (auto crt = p_.crt_inline.find(t); crt != p_.crt_inline.end()) {
+-          // An import stub for a memory primitive (manifest `crt`): the
+-          // handler's host call, here, with no spill, push or dispatch.
+-          // The volatile registers it would clobber keep their values.
+-          if (crt->second == "memset")
+-            L("std::memset(B + rcx, int(uint8_t(rdx)), size_t(r8));");
+-          else
+-            L("std::memmove(B + rcx, B + rdx, size_t(r8));");
+-          L("rax = rcx;");
++          EmitCrt(crt->second);
+           return;
+         }
+         Push64(Hex(next));
+@@ -2987,6 +3015,16 @@ void InsnEmitter::Emit64() {
+         // has once setjmp returns.
+         if (p_.setjmps.count(t)) L("SJ = rsp;");
+       } else {
++        // call [rip+slot] straight through an import slot (manifest `crt`
++        // with the slot's address).
++        if (Op(0).type == ZYDIS_OPERAND_TYPE_MEMORY && Op(0).mem.base == ZYDIS_REGISTER_RIP &&
++            Op(0).mem.index == ZYDIS_REGISTER_NONE) {
++          const uint64_t slot = in_.next() + uint64_t(Op(0).mem.disp.value);
++          if (auto crt = p_.crt_inline.find(slot); crt != p_.crt_inline.end()) {
++            EmitCrt(crt->second);
++            return;
++          }
++        }
+         if (!PrepareMem()) return Unimpl();
+         L("const uint64_t t = " + Read(0) + ";");
+         Push64(Hex(next));
+diff --git a/tools/lifter_x86/program.cpp b/tools/lifter_x86/program.cpp
+index 8994d7f..770c6df 100644
+--- a/tools/lifter_x86/program.cpp
++++ b/tools/lifter_x86/program.cpp
+@@ -176,8 +176,12 @@ bool Program::LoadManifest(const std::string& path, std::string* err) {
+       t.erase(std::unique(t.begin(), t.end()), t.end());
+       jumptables[va] = std::move(t);
+     } else if (kind == "crt") {
+-      if (name != "memcpy" && name != "memmove" && name != "memset") {
+-        *err = path + ":" + std::to_string(no) + ": crt takes memcpy, memmove or memset";
++      static const char* const kCrt[] = {"memcpy", "memmove", "memset", "memcmp", "sqrtf",
++                                         "sqrt",   "floorf",  "ceilf",  "fmodf",  "sinf",
++                                         "cosf",   "tanf",    "asinf",  "acosf",  "expf",
++                                         "logf",   "atan2f",  "powf",   "_isnan", "_finite"};
++      if (std::find(std::begin(kCrt), std::end(kCrt), name) == std::end(kCrt)) {
++        *err = path + ":" + std::to_string(no) + ": crt does not know " + name;
+         return false;
+       }
+       crt_inline[va] = name;
+-- 
+2.51.0.windows.1
+

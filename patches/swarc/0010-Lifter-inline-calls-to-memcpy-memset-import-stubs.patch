@@ -1,0 +1,73 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: finalpantasy <finalpantasy@users.noreply.github.com>
+Date: Sun, 22 Nov 2026 04:27:32 -0500
+Subject: [PATCH 10/34] Lifter: inline calls to memcpy/memset import stubs
+
+Manifest directive 'crt <stub VA> memcpy|memmove|memset' makes direct
+calls to that stub emit std::memmove/std::memset on guest memory with
+rax = rcx, skipping the register spill, dispatch and HLE call.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ tools/lifter_x86/emit.cpp    | 11 +++++++++++
+ tools/lifter_x86/program.cpp |  6 ++++++
+ tools/lifter_x86/program.h   |  4 ++++
+ 3 files changed, 21 insertions(+)
+
+diff --git a/tools/lifter_x86/emit.cpp b/tools/lifter_x86/emit.cpp
+index d6ea0ee..1ef0bad 100644
+--- a/tools/lifter_x86/emit.cpp
++++ b/tools/lifter_x86/emit.cpp
+@@ -2964,6 +2964,17 @@ void InsnEmitter::Emit64() {
+     case ZYDIS_MNEMONIC_CALL: {
+       if (IsImm(0)) {
+         uint64_t t = RelTarget(in_);
++        if (auto crt = p_.crt_inline.find(t); crt != p_.crt_inline.end()) {
++          // An import stub for a memory primitive (manifest `crt`): the
++          // handler's host call, here, with no spill, push or dispatch.
++          // The volatile registers it would clobber keep their values.
++          if (crt->second == "memset")
++            L("std::memset(B + rcx, int(uint8_t(rdx)), size_t(r8));");
++          else
++            L("std::memmove(B + rcx, B + rdx, size_t(r8));");
++          L("rax = rcx;");
++          return;
++        }
+         Push64(Hex(next));
+         if (t == next) return;
+         if (!p_.InText(t)) {
+diff --git a/tools/lifter_x86/program.cpp b/tools/lifter_x86/program.cpp
+index 22caa67..8994d7f 100644
+--- a/tools/lifter_x86/program.cpp
++++ b/tools/lifter_x86/program.cpp
+@@ -175,6 +175,12 @@ bool Program::LoadManifest(const std::string& path, std::string* err) {
+       std::sort(t.begin(), t.end());
+       t.erase(std::unique(t.begin(), t.end()), t.end());
+       jumptables[va] = std::move(t);
++    } else if (kind == "crt") {
++      if (name != "memcpy" && name != "memmove" && name != "memset") {
++        *err = path + ":" + std::to_string(no) + ": crt takes memcpy, memmove or memset";
++        return false;
++      }
++      crt_inline[va] = name;
+     } else if (kind == "tailcall") {
+       // tailcall <jmp VA>: an indirect tail call through a function pointer
+       // that the exported jump tables list as a switch with only the targets
+diff --git a/tools/lifter_x86/program.h b/tools/lifter_x86/program.h
+index 8690230..7104a4d 100644
+--- a/tools/lifter_x86/program.h
++++ b/tools/lifter_x86/program.h
+@@ -94,6 +94,10 @@ struct Program {
+   std::set<uint64_t> resume_sites;            // manifest: calls/jmps that
+                                               // abandon the stack (SEH,
+                                               // longjmp)
++  // manifest `crt <stub VA> <memcpy|memmove|memset>`: an import stub
++  // (jmp [IAT]) for a vcruntime primitive whose handler is the host
++  // memmove/memset on guest memory; direct calls to it are done inline.
++  std::map<uint64_t, std::string> crt_inline;
+   std::set<uint64_t> setjmps;                 // manifest or reader: setjmp
+                                               // (their callers can be
+                                               // resumed by longjmp)
+-- 
+2.51.0.windows.1
+

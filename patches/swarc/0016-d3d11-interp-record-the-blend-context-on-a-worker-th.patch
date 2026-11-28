@@ -1,0 +1,1130 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: finalpantasy <finalpantasy@users.noreply.github.com>
+Date: Sun, 22 Nov 2026 11:45:41 -0500
+Subject: [PATCH 16/34] d3d11 interp: record the blend context on a worker
+ thread
+
+The render thread makes each context call on the main recording context and
+queues a copy for the blend context (arrays and upload data copied,
+interfaces held by reference until replayed). Constant-buffer blending, the
+dynamic-buffer prefill and the blend list's FinishCommandList run on the
+worker. The presenter waits for the blend list by ticket, and the game waits
+only until the presenter has taken the previous frame, not until it has shown
+it; mid-frame syncs wait for the presenter first to keep frame order.
+Getters read the main context only (they leaked references from the blend
+one). Devices are not created SINGLETHREADED while recording.
+
+FFXII_D3D_INTERP_KICK_KB and FFXII_D3D_INTERP_SPIN_US tune the queue; the
+paced report gives presenter and game wait times per frame.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ platforms/win32/src/win32/d3d11.cpp | 644 ++++++++++++++++++++++------
+ platforms/win32/src/win32/d3d11.h   |   9 +
+ platforms/win32/src/win32/dxgi.cpp  |  55 ++-
+ platforms/win32/src/win32/dxvk.h    |   2 -
+ 4 files changed, 565 insertions(+), 145 deletions(-)
+
+diff --git a/platforms/win32/src/win32/d3d11.cpp b/platforms/win32/src/win32/d3d11.cpp
+index 935ecbd..91c2d14 100644
+--- a/platforms/win32/src/win32/d3d11.cpp
++++ b/platforms/win32/src/win32/d3d11.cpp
+@@ -1,4 +1,10 @@
+ #include <algorithm>
++#include <atomic>
++#include <condition_variable>
++#include <deque>
++#include <thread>
++#include <type_traits>
++#include <unordered_set>
+ #include <unordered_map>
+ #include <chrono>
+ #include <cmath>
+@@ -37,6 +43,11 @@ uint32_t DebugFlag() {
+   static const bool on = Env("D3D_DEBUG") != nullptr;
+   return on ? D3D11_CREATE_DEVICE_DEBUG : 0;
+ }
++uint32_t DeviceFlags(uint32_t guest) {
++  static const bool recording = Env("D3D_RECORD") != nullptr;
++  if (recording) guest &= ~uint32_t(D3D11_CREATE_DEVICE_SINGLETHREADED);
++  return guest | DebugFlag();
++}
+ 
+ struct Recorder {
+   ID3D11DeviceContext* immediate = nullptr;
+@@ -72,13 +83,6 @@ struct DynamicBuffer {
+ };
+ std::unordered_map<ID3D11Resource*, DynamicBuffer> g_dyn;
+ 
+-struct ContextSet {
+-  ID3D11DeviceContext* c[2];
+-  int n;
+-  ID3D11DeviceContext** begin() { return c; }
+-  ID3D11DeviceContext** end() { return c + n; }
+-};
+-
+ // The host context for a guest context: the deferred one in place of the
+ // immediate context while recording.
+ ID3D11DeviceContext* HostContext(gaddr guest) {
+@@ -86,16 +90,6 @@ ID3D11DeviceContext* HostContext(gaddr guest) {
+   if (g_rec.deferred && host == g_rec.immediate) return g_rec.deferred;
+   return host;
+ }
+-// Every host context a state-setting or drawing call goes to: both recording
+-// contexts while interpolating.
+-ContextSet RecordContexts(gaddr guest) {
+-  ID3D11DeviceContext* host = DxvkHost<ID3D11DeviceContext>(guest);
+-  if (g_rec.deferred && host == g_rec.immediate) {
+-    if (g_rec.blend) return {{g_rec.deferred, g_rec.blend}, 2};
+-    return {{g_rec.deferred, nullptr}, 1};
+-  }
+-  return {{host, nullptr}, 1};
+-}
+ 
+ // The blended copy of a constant-buffer upload, for the second context:
+ // 32-bit words that are normal floats in both frames and differ are set
+@@ -133,7 +127,7 @@ void BlendUploadInto(void* dst, const void* data, size_t size) {
+   out.assign(static_cast<const uint8_t*>(data), static_cast<const uint8_t*>(data) + size);
+   if (k >= g_rec.prev.size() || g_rec.prev[k].size() != size) {
+     ++g_rec.kept;
+-    std::memcpy(dst, data, size);
++    if (dst != data) std::memcpy(dst, data, size);
+     return;
+   }
+   ++g_rec.blended;
+@@ -161,6 +155,326 @@ bool IsConstantBuffer(ID3D11Resource* resource) {
+   return (desc.BindFlags & D3D11_BIND_CONSTANT_BUFFER) != 0;
+ }
+ 
++// ---- blend recording worker -----------------------------------------------
++// The blend context records on its own thread. The render thread makes each
++// call on the main recording context and queues a copy for the blend context:
++// arrays and upload data are copied, interfaces held with a reference until
++// the worker has made the call. Constant-buffer blending runs on the worker.
++template <class T>
++constexpr bool kIsCom = std::is_pointer_v<T> &&
++                        std::is_base_of_v<IUnknown, std::remove_cv_t<std::remove_pointer_t<T>>>;
++
++template <class E>
++struct Span {
++  const E* p;
++  size_t n;
++};
++template <class E>
++Span<E> Arr(const E* p, size_t n) {
++  return {p, p ? n : 0};
++}
++
++template <class E>
++struct OwnedArr {
++  E inl[16];
++  std::vector<E> big;
++  const E* p = nullptr;
++  size_t n = 0;
++  explicit OwnedArr(Span<E> s) : n(s.n) {
++    if (!s.p) return;
++    E* d = inl;
++    if (n > 16) {
++      big.resize(n);
++      d = big.data();
++    }
++    std::memcpy(static_cast<void*>(d), s.p, n * sizeof(E));
++    if constexpr (kIsCom<E>)
++      for (size_t i = 0; i < n; ++i)
++        if (d[i]) d[i]->AddRef();
++    p = d;
++  }
++  OwnedArr(const OwnedArr&) = delete;
++  OwnedArr& operator=(const OwnedArr&) = delete;
++  ~OwnedArr() {
++    if constexpr (kIsCom<E>)
++      if (p)
++        for (size_t i = 0; i < n; ++i)
++          if (p[i]) p[i]->Release();
++  }
++  operator const E*() const { return p; }
++};
++
++template <class T>
++struct OwnedCom {
++  T* p;
++  explicit OwnedCom(T* v) : p(v) {
++    if (p) p->AddRef();
++  }
++  OwnedCom(const OwnedCom&) = delete;
++  OwnedCom& operator=(const OwnedCom&) = delete;
++  ~OwnedCom() {
++    if (p) p->Release();
++  }
++  operator T*() const { return p; }
++};
++
++template <class A>
++struct OwnOf {
++  static_assert(!std::is_pointer_v<A> || kIsCom<A>,
++                "a guest pointer queued for the blend context must be copied: wrap it in Arr()");
++  using type = std::conditional_t<kIsCom<A>, OwnedCom<std::remove_pointer_t<A>>, A>;
++};
++template <class E>
++struct OwnOf<Span<E>> {
++  using type = OwnedArr<E>;
++};
++
++template <class A>
++A Raw(A a) {
++  return a;
++}
++template <class E>
++const E* Raw(Span<E> s) {
++  return s.p;
++}
++
++template <class M, class... A>
++struct QueuedCall {
++  M m;
++  std::tuple<typename OwnOf<A>::type...> args;
++  explicit QueuedCall(M method, A... a) : m(method), args(a...) {}
++  void operator()(ID3D11DeviceContext* ctx, uint8_t*) {
++    std::apply([&](auto&... x) { (ctx->*m)(x...); }, args);
++  }
++};
++
++constexpr size_t R16(size_t n) { return (n + 15) & ~size_t(15); }
++
++class BlendWorker {
++ public:
++  // Space for one command of type F plus `extra` payload bytes; construct
++  // with Emplace, fill the payload, then Commit.
++  template <class F, class... CA>
++  uint8_t* Emplace(size_t extra, CA&&... ca) {
++    static constexpr size_t off = R16(sizeof(Hdr));
++    static constexpr size_t foff = off + R16(sizeof(F));
++    const size_t total = foff + R16(extra);
++    uint8_t* e = Alloc(total);
++    auto* h = reinterpret_cast<Hdr*>(e);
++    h->size = total;
++    h->run = [](uint8_t* entry, ID3D11DeviceContext* ctx) {
++      F* f = reinterpret_cast<F*>(entry + off);
++      (*f)(ctx, entry + foff);
++      f->~F();
++    };
++    new (e + off) F(std::forward<CA>(ca)...);
++    return e + foff;
++  }
++  void Commit() {
++    // FFXII_D3D_INTERP_KICK_KB: how much is queued before the worker gets it.
++    static const size_t kick = [] {
++      const char* v = Env("D3D_INTERP_KICK_KB");
++      return v ? size_t(std::atoi(v)) << 10 : kKick;
++    }();
++    if (cur_ && cur_->used >= kick) Kick();
++  }
++  // Hands what is queued to the worker.
++  void Kick() {
++    if (!cur_ || !cur_->used) return;
++    {
++      std::lock_guard<std::mutex> lock(mu_);
++      if (!started_) {
++        started_ = true;
++#ifdef _WIN32
++        // The worker runs at the priority of the thread that feeds it (the
++        // game's render thread), or it falls behind whenever the PC is busy.
++        const int prio = GetThreadPriority(GetCurrentThread());
++        std::thread([this, prio] {
++          SetThreadPriority(GetCurrentThread(), prio);
++          Loop();
++        }).detach();
++        std::fprintf(stderr, "[d3d11] blend worker started at thread priority %d\n", prio);
++#else
++        std::thread(&BlendWorker::Loop, this).detach();
++#endif
++      }
++      ready_.push_back(cur_);
++    }
++    cur_ = nullptr;
++    pending_.fetch_add(1, std::memory_order_release);
++    wake_.notify_one();
++  }
++  // Waits until every queued command has run.
++  void Drain() {
++    Kick();
++    std::unique_lock<std::mutex> lock(mu_);
++    idle_.wait(lock, [this] { return ready_.empty() && !busy_; });
++  }
++  uint64_t drains = 0;
++  std::atomic<uint64_t> busy_ns{0};
++
++ private:
++  struct Hdr {
++    void (*run)(uint8_t*, ID3D11DeviceContext*);
++    size_t size;
++  };
++  struct Chunk {
++    uint8_t* buf;
++    size_t cap, used;
++  };
++  static constexpr size_t kChunk = 256 << 10, kKick = 64 << 10;
++
++  uint8_t* Alloc(size_t n) {
++    if (!cur_ || cur_->used + n > cur_->cap) {
++      Kick();
++      cur_ = Take(n);
++    }
++    uint8_t* p = cur_->buf + cur_->used;
++    cur_->used += n;
++    return p;
++  }
++  Chunk* Take(size_t n) {
++    {
++      std::lock_guard<std::mutex> lock(mu_);
++      for (size_t i = 0; i < free_.size(); ++i)
++        if (free_[i]->cap >= n) {
++          Chunk* c = free_[i];
++          free_.erase(free_.begin() + ptrdiff_t(i));
++          return c;
++        }
++    }
++    const size_t cap = std::max(kChunk, n);
++    return new Chunk{static_cast<uint8_t*>(std::malloc(cap)), cap, 0};
++  }
++  void Loop() {
++    for (;;) {
++      Chunk* c;
++      // A short spin first: under load, every sleep and wake costs scheduler time.
++      static const int spin_us = [] {
++        const char* v = Env("D3D_INTERP_SPIN_US");
++        return v ? std::atoi(v) : 300;
++      }();
++      const auto spin_end = std::chrono::steady_clock::now() + std::chrono::microseconds(spin_us);
++      while (pending_.load(std::memory_order_acquire) == 0 &&
++             std::chrono::steady_clock::now() < spin_end)
++        std::this_thread::yield();
++      {
++        std::unique_lock<std::mutex> lock(mu_);
++        wake_.wait(lock, [this] { return !ready_.empty(); });
++        pending_.fetch_sub(1, std::memory_order_relaxed);
++        c = ready_.front();
++        ready_.pop_front();
++        busy_ = true;
++      }
++      const auto t0 = std::chrono::steady_clock::now();
++      for (size_t at = 0; at < c->used;) {
++        auto* h = reinterpret_cast<Hdr*>(c->buf + at);
++        const size_t size = h->size;
++        h->run(c->buf + at, g_rec.blend);
++        at += size;
++      }
++      c->used = 0;
++      busy_ns.fetch_add(uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
++                                     std::chrono::steady_clock::now() - t0).count()),
++                        std::memory_order_relaxed);
++      {
++        std::lock_guard<std::mutex> lock(mu_);
++        free_.push_back(c);
++        busy_ = false;
++      }
++      idle_.notify_all();
++    }
++  }
++
++  std::mutex mu_;
++  std::condition_variable wake_, idle_;
++  std::deque<Chunk*> ready_;
++  std::vector<Chunk*> free_;
++  Chunk* cur_ = nullptr;  // render thread only
++  bool busy_ = false, started_ = false;
++  std::atomic<int> pending_{0};
++};
++BlendWorker g_worker;
++
++// Worker-side state: what the blend context's list has mapped, and each
++// dynamic buffer's last contents for the prefill.
++struct WorkerDyn {
++  std::vector<uint8_t> bytes;
++  uint64_t list = 0;
++};
++struct WorkerState {
++  uint64_t list = 1;
++  std::unordered_set<ID3D11Resource*> discarded;  // DISCARD-mapped in this list
++  std::unordered_map<ID3D11Resource*, WorkerDyn> dyn;
++};
++WorkerState g_ws;
++
++// Makes a context call: on the guest's context, or while recording on the
++// main recording context with a copy queued for the blend context.
++template <class M, class... A>
++void Rec(gaddr guest, M m, A... a) {
++  ID3D11DeviceContext* host = DxvkHost<ID3D11DeviceContext>(guest);
++  if (g_rec.deferred && host == g_rec.immediate) {
++    (g_rec.deferred->*m)(Raw(a)...);
++    if (g_rec.blend) {
++      g_worker.Emplace<QueuedCall<M, A...>>(0, m, a...);
++      g_worker.Commit();
++    }
++    return;
++  }
++  (host->*m)(Raw(a)...);
++}
++template <class M>
++struct RecOn {
++  gaddr guest;
++  M m;
++  template <class... A>
++  void operator()(A... a) const {
++    Rec(guest, m, a...);
++  }
++};
++template <class M>
++RecOn<M> RecCall(gaddr guest, M m) {
++  return {guest, m};
++}
++
++// A buffer or texture write made on the main recording context, replayed on
++// the blend context: constant buffers blended, dynamic buffers remembered for
++// the prefill.
++struct QueuedWrite {
++  OwnedCom<ID3D11Resource> res;
++  uint32_t sub, size;
++  bool map, no_overwrite, constant, dynamic_buffer, has_box;
++  D3D11_BOX box;
++  QueuedWrite(ID3D11Resource* r, uint32_t s, uint32_t n, bool m, bool nov, bool cb, bool dyn,
++              const D3D11_BOX* b)
++      : res(r), sub(s), size(n), map(m), no_overwrite(nov), constant(cb), dynamic_buffer(dyn),
++        has_box(b != nullptr), box(b ? *b : D3D11_BOX{}) {}
++  void operator()(ID3D11DeviceContext* ctx, uint8_t* data) {
++    if (constant) BlendUploadInto(data, data, size);
++    if (!map) {
++      ctx->UpdateSubresource(res, sub, has_box ? &box : nullptr, data, 0, 0);
++      return;
++    }
++    D3D11_MAP t = D3D11_MAP_WRITE_DISCARD;
++    if (no_overwrite && g_ws.discarded.count(res)) t = D3D11_MAP_WRITE_NO_OVERWRITE;
++    D3D11_MAPPED_SUBRESOURCE bm{};
++    if (FAILED(ctx->Map(res, sub, t, 0, &bm))) {
++      if (++g_rec.map_fails < 4) WarnF("d3d11: blend Map failed (type %d)" "\n", int(t));
++      return;
++    }
++    std::memcpy(bm.pData, data, size);
++    ctx->Unmap(res, sub);
++    if (t == D3D11_MAP_WRITE_DISCARD) g_ws.discarded.insert(res);
++    if (dynamic_buffer) {
++      auto [it, fresh] = g_ws.dyn.try_emplace(res);
++      if (fresh) res.p->AddRef();
++      it->second.bytes.assign(data, data + size);
++      it->second.list = g_ws.list;
++    }
++  }
++};
++
+ // The host context itself, after running what was recorded: for calls a
+ // deferred context cannot make (GetData, reading maps, Flush).
+ ID3D11DeviceContext* SyncContext(gaddr guest, int why) {
+@@ -178,6 +492,10 @@ void StartRecording(ID3D11Device* device, ID3D11DeviceContext* immediate) {
+   if (!device || !immediate || !Env("D3D_RECORD")) return;
+   // Games may create a probe device first: recording follows the newest one.
+   if (g_rec.deferred) {
++    g_worker.Drain();
++    for (auto& [res, d] : g_ws.dyn) res->Release();
++    g_ws.dyn.clear();
++    g_ws.discarded.clear();
+     g_rec.deferred->Release();
+     if (g_rec.blend) g_rec.blend->Release();
+     g_rec.deferred = g_rec.blend = nullptr;
+@@ -197,6 +515,11 @@ void StartRecording(ID3D11Device* device, ID3D11DeviceContext* immediate) {
+   if (DebugFlag()) device->QueryInterface(__uuidof(ID3D11InfoQueue), reinterpret_cast<void**>(&g_rec.info));
+ #endif
+   g_rec.deferred = deferred;
++  D3D11_FEATURE_DATA_THREADING th{};
++  if (SUCCEEDED(device->CheckFeatureSupport(D3D11_FEATURE_THREADING, &th, sizeof th)))
++    std::fprintf(stderr, "[d3d11] driver command lists %d, concurrent creates %d, flags 0x%X\n",
++                 int(th.DriverCommandLists), int(th.DriverConcurrentCreates),
++                 device->GetCreationFlags());
+   if (Env("D3D_INTERP")) {
+     ID3D11DeviceContext* blend = nullptr;
+     if (SUCCEEDED(device->CreateDeferredContext(0, &blend)) && blend) {
+@@ -606,7 +929,10 @@ uint32_t Map(Ctx& c) {
+   const bool writes_only = type == D3D11_MAP_WRITE_DISCARD || type == D3D11_MAP_WRITE_NO_OVERWRITE;
+   // Reading maps run on the immediate context, which the presenter shares.
+   std::unique_lock<std::recursive_mutex> imm(D3d11ImmediateLock(), std::defer_lock);
+-  if (!writes_only) imm.lock();
++  if (!writes_only) {
++    D3d11BeforeSync();
++    imm.lock();
++  }
+   ID3D11DeviceContext* context = writes_only ? HostContext(Arg(c, 0)) : SyncContext(Arg(c, 0), 0);
+   ID3D11Resource* resource = DxvkHost<ID3D11Resource>(Arg(c, 1));
+   gaddr out = Arg(c, 5);
+@@ -653,23 +979,8 @@ uint32_t Map(Ctx& c) {
+     }
+   }
+   (void)refill;
+-  // The blend context maps the same subresource alongside: the first map of
+-  // the buffer in its list is a DISCARD, later ones keep the main map's type.
+-  void* blend_data = nullptr;
+-  if (deferred && g_rec.blend && object) {
+-    D3D11_MAP bt = host_type;
+-    if (bt == D3D11_MAP_WRITE_NO_OVERWRITE && object->blend_discard_list != g_rec.list)
+-      bt = D3D11_MAP_WRITE_DISCARD;
+-    D3D11_MAPPED_SUBRESOURCE bm{};
+-    if (SUCCEEDED(g_rec.blend->Map(resource, uint32_t(Arg(c, 2)), bt, 0, &bm))) {
+-      blend_data = bm.pData;
+-      if (bt == D3D11_MAP_WRITE_DISCARD) object->blend_discard_list = g_rec.list;
+-    } else if (++g_rec.map_fails < 4) {
+-      WarnF("d3d11: blend Map failed (type %d)\n", int(bt));
+-    }
+-  }
+   object->mappings[uint32_t(Arg(c, 2))] =
+-      DxvkMapping{mapped.pData, shadow, size, uint32_t(type), blend_data};
++      DxvkMapping{mapped.pData, shadow, size, uint32_t(type)};
+   Wr64(out, shadow);
+   Wr32(out + 8, mapped.RowPitch);
+   Wr32(out + 12, mapped.DepthPitch);
+@@ -700,7 +1011,6 @@ uint32_t Unmap(Ctx& c) {
+   if (!context) return 0;
+   if (it != object->mappings.end()) {
+     const DxvkMapping mapping = it->second;
+-    bool to_blend = false;
+     bool keep_shadow = false;
+     if (mapping.type != D3D11_MAP_READ) {
+       std::memcpy(mapping.host_data, GPtr(mapping.guest_data), mapping.size);
+@@ -716,13 +1026,14 @@ uint32_t Unmap(Ctx& c) {
+         it2->second.list = g_rec.list;
+         keep_shadow = true;
+       }
+-      if (mapping.blend_data) {
+-        const void* src = GPtr(mapping.guest_data);
+-        if (dim == D3D11_RESOURCE_DIMENSION_BUFFER && IsConstantBuffer(resource))
+-          BlendUploadInto(mapping.blend_data, src, mapping.size);
+-        else
+-          std::memcpy(mapping.blend_data, src, mapping.size);
+-        to_blend = true;
++      if (g_rec.blend && context == g_rec.deferred) {
++        const bool buffer = dim == D3D11_RESOURCE_DIMENSION_BUFFER;
++        const bool cb = buffer && IsConstantBuffer(resource);
++        uint8_t* p = g_worker.Emplace<QueuedWrite>(
++            mapping.size, resource, subresource, uint32_t(mapping.size), true,
++            mapping.type == D3D11_MAP_WRITE_NO_OVERWRITE, cb, buffer, nullptr);
++        std::memcpy(p, GPtr(mapping.guest_data), mapping.size);
++        g_worker.Commit();
+       }
+       D3D11_BUFFER_DESC desc{};
+       if (g_buffer_upload_hook && BufferDesc(resource, &desc))
+@@ -731,7 +1042,6 @@ uint32_t Unmap(Ctx& c) {
+     }
+     object->mappings.erase(it);
+     context->Unmap(resource, subresource);
+-    if (to_blend) g_rec.blend->Unmap(resource, subresource);
+     if (!keep_shadow) HeapFreeProcess(mapping.guest_data);
+   } else {
+     context->Unmap(resource, subresource);
+@@ -761,6 +1071,11 @@ void DrainDebugMessages() {
+ #endif
+ }
+ 
++void (*g_d3d11_before_sync)() = nullptr;
++void D3d11BeforeSync() {
++  if (g_rec.deferred && g_d3d11_before_sync) g_d3d11_before_sync();
++}
++
+ std::recursive_mutex& D3d11ImmediateLock() {
+   static std::recursive_mutex mu;
+   return mu;
+@@ -775,46 +1090,97 @@ void D3d11Execute(ID3D11CommandList* list) {
+   list->Release();
+ }
+ 
+-ID3D11CommandList* D3d11FinishBlended(bool* show) {
+-  *show = false;
+-  DrainDebugMessages();
+-  if (!g_rec.blend) return nullptr;
+-  ID3D11CommandList* list = nullptr;
+-  const bool ok = g_rec.blend_ok;
+-  HRESULT hr = g_rec.blend->FinishCommandList(TRUE, &list);
+-  // Buffers mapped in the frame just recorded are mapped again in the next;
+-  // the rest start the next blend list with their contents.
+-  for (auto it = g_dyn.begin(); it != g_dyn.end(); ++it) {
+-    ID3D11Resource* res = it->first;
+-    if (it->second.list != g_rec.list) {
+-      D3D11_MAPPED_SUBRESOURCE bm{};
+-      if (SUCCEEDED(g_rec.blend->Map(res, 0, D3D11_MAP_WRITE_DISCARD, 0, &bm))) {
+-        std::memcpy(bm.pData, GPtr(it->second.data), it->second.size);
+-        g_rec.blend->Unmap(res, 0);
+-        g_rec.prefill_bytes += it->second.size;
+-        ++g_rec.prefills;
++namespace {
++// Runs on the worker at the end of a frame: closes the blend list and starts
++// the next with the dynamic buffers it will draw without mapping.
++struct FinishedLists {
++  std::mutex mu;
++  std::condition_variable cv;
++  std::map<uint64_t, ID3D11CommandList*> lists;  // by ticket; null when it failed
++};
++FinishedLists g_finished;
++
++struct QueuedFinish {
++  uint64_t ticket;
++  explicit QueuedFinish(uint64_t t) : ticket(t) {}
++  void operator()(ID3D11DeviceContext* ctx, uint8_t*) {
++    ID3D11CommandList* list = nullptr;
++    if (FAILED(ctx->FinishCommandList(TRUE, &list))) list = nullptr;
++    {
++      std::lock_guard<std::mutex> lock(g_finished.mu);
++      g_finished.lists[ticket] = list;
++    }
++    g_finished.cv.notify_all();
++    const bool sweep = g_ws.list % 600 == 0;
++    for (auto it = g_ws.dyn.begin(); it != g_ws.dyn.end();) {
++      ID3D11Resource* res = it->first;
++      if (sweep) {
++        res->AddRef();
++        if (res->Release() == 1) {  // only this table holds it
++          res->Release();
++          it = g_ws.dyn.erase(it);
++          continue;
++        }
++      }
++      if (it->second.list != g_ws.list) {
++        D3D11_MAPPED_SUBRESOURCE bm{};
++        if (SUCCEEDED(ctx->Map(res, 0, D3D11_MAP_WRITE_DISCARD, 0, &bm))) {
++          std::memcpy(bm.pData, it->second.bytes.data(), it->second.bytes.size());
++          ctx->Unmap(res, 0);
++          g_rec.prefill_bytes += it->second.bytes.size();
++          ++g_rec.prefills;
++        }
+       }
++      ++it;
+     }
++    ++g_ws.list;
++    g_ws.discarded.clear();
++    g_rec.prev.swap(g_rec.cur);
++    g_rec.prev.resize(g_rec.cur_n);
++    g_rec.cur_n = 0;
+   }
+-  g_rec.prev.swap(g_rec.cur);
+-  g_rec.prev.resize(g_rec.cur_n);
+-  g_rec.cur_n = 0;
++};
++}  // namespace
++
++uint64_t D3d11QueueFinishBlended(bool* show) {
++  static uint64_t next = 1;
++  *show = false;
++  DrainDebugMessages();
++  if (!g_rec.blend) return 0;
++  *show = g_rec.blend_ok;
+   g_rec.blend_ok = true;
+-  if (++g_rec.frames % 600 == 0)
+-    std::fprintf(stderr, "[d3d11] interp: %llu frames, %llu mid-frame syncs, uploads %llu blended %llu kept, %llu KB\n",
++  const uint64_t ticket = next++;
++  g_worker.Emplace<QueuedFinish>(0, ticket);
++  g_worker.Kick();
++  if (++g_rec.frames % 600 == 0) {
++    std::fprintf(stderr, "[d3d11] interp: %llu frames, %llu mid-frame syncs, uploads %llu blended %llu kept, %llu KB, worker busy %.2f ms/frame, %llu drains" "\n",
+                  (unsigned long long)g_rec.frames, (unsigned long long)g_rec.syncs,
+                  (unsigned long long)g_rec.blended, (unsigned long long)g_rec.kept,
+-                 (unsigned long long)(g_rec.blend_bytes >> 10));
+-  if (g_rec.frames % 600 == 0)
+-    std::fprintf(stderr, "[d3d11] syncs: map %llu flush %llu getdata %llu\n",
++                 (unsigned long long)(g_rec.blend_bytes >> 10),
++                 double(g_worker.busy_ns.exchange(0)) / 1e6 / 600,
++                 (unsigned long long)g_worker.drains);
++    std::fprintf(stderr, "[d3d11] syncs: map %llu flush %llu getdata %llu" "\n",
+                  (unsigned long long)g_rec.sync_why[0], (unsigned long long)g_rec.sync_why[1],
+                  (unsigned long long)g_rec.sync_why[2]);
+-  if (g_rec.frames % 600 == 0)
+-    std::fprintf(stderr, "[d3d11] blend prefill: %llu buffers %llu KB, %zu tracked\n",
++    std::fprintf(stderr, "[d3d11] blend prefill: %llu buffers %llu KB, %zu tracked" "\n",
+                  (unsigned long long)g_rec.prefills,
+-                 (unsigned long long)(g_rec.prefill_bytes >> 10), g_dyn.size());
+-  if (FAILED(hr) || !list) return nullptr;
+-  *show = ok;
++                 (unsigned long long)(g_rec.prefill_bytes >> 10), g_ws.dyn.size());
++  }
++  return ticket;
++}
++
++ID3D11CommandList* D3d11TakeBlended(uint64_t ticket) {
++  if (!ticket) return nullptr;
++  std::unique_lock<std::mutex> lock(g_finished.mu);
++  g_finished.cv.wait(lock, [&] { return g_finished.lists.count(ticket) != 0; });
++  ID3D11CommandList* list = g_finished.lists[ticket];
++  g_finished.lists.erase(ticket);
++  return list;
++}
++
++ID3D11CommandList* D3d11FinishBlended(bool* show) {
++  ID3D11CommandList* list = D3d11TakeBlended(D3d11QueueFinishBlended(show));
++  if (!list) *show = false;
+   return list;
+ }
+ 
+@@ -868,7 +1234,7 @@ HLE64(kDll, D3D11CreateDevice, kCdecl) {
+   if (Arg(c, 7)) Wr64(Arg(c, 7), 0);
+   if (Arg(c, 9)) Wr64(Arg(c, 9), 0);
+   HRESULT hr = ::D3D11CreateDevice(adapter, D3D_DRIVER_TYPE(uint32_t(Arg(c, 1))), nullptr,
+-      uint32_t(Arg(c, 3)) | DebugFlag(), reinterpret_cast<const D3D_FEATURE_LEVEL*>(Ptr(Arg(c, 4))),
++      DeviceFlags(uint32_t(Arg(c, 3))), reinterpret_cast<const D3D_FEATURE_LEVEL*>(Ptr(Arg(c, 4))),
+       uint32_t(Arg(c, 5)), uint32_t(Arg(c, 6)), &device, &level, &context);
+   if (SUCCEEDED(hr)) {
+     if (Arg(c, 7)) Wr64(Arg(c, 7), WrapOut(device)); else if (device) device->Release();
+@@ -896,7 +1262,7 @@ HLE64(kDll, D3D11CreateDeviceAndSwapChain, kCdecl) {
+   if (Arg(c, 9)) Wr64(Arg(c, 9), 0);
+   if (Arg(c, 11)) Wr64(Arg(c, 11), 0);
+   HRESULT hr = ::D3D11CreateDeviceAndSwapChain(DxvkHost<IDXGIAdapter>(Arg(c, 0)),
+-      D3D_DRIVER_TYPE(uint32_t(Arg(c, 1))), nullptr, uint32_t(Arg(c, 3)) | DebugFlag(),
++      D3D_DRIVER_TYPE(uint32_t(Arg(c, 1))), nullptr, DeviceFlags(uint32_t(Arg(c, 3))),
+       reinterpret_cast<const D3D_FEATURE_LEVEL*>(Ptr(Arg(c, 4))), uint32_t(Arg(c, 5)),
+       uint32_t(Arg(c, 6)), desc_ptr, &swap, &device, &level, &context);
+   if (SUCCEEDED(hr)) {
+@@ -1292,8 +1658,8 @@ HLE_NAMED_X(kDll, "ID3D11DeviceContext::Unmap", D3dContextUnmap, kCdecl, true) {
+   HLE_NAMED_X(kDll, "ID3D11DeviceContext::" #method, handler, kCdecl, true) {            \
+     uint32_t count = uint32_t(Arg(c, 2));                                                  \
+     auto values = GuestInterfaces<type>(Arg(c, 3), count);                                 \
+-    for (ID3D11DeviceContext* hc_ : RecordContexts(Arg(c, 0))) hc_->method(uint32_t(Arg(c, 1)), count,            \
+-                                                     values.data());                        \
++    Rec(Arg(c, 0), &ID3D11DeviceContext::method, uint32_t(Arg(c, 1)), count,                \
++        Arr(values.data(), count));                                                         \
+     return 0;                                                                              \
+   }
+ D3D11_SET_BINDINGS(VSSetConstantBuffers, D3dVsSetCb, ID3D11Buffer)
+@@ -1319,7 +1685,7 @@ D3D11_SET_BINDINGS(CSSetSamplers, D3dCsSetSampler, ID3D11SamplerState)
+ #define D3D11_SET_SHADER(method, handler, type)                                            \
+   HLE_NAMED_X(kDll, "ID3D11DeviceContext::" #method, handler, kCdecl, true) {            \
+     if (Arg(c, 3)) FatalF("ID3D11DeviceContext::" #method " class instances");             \
+-    for (ID3D11DeviceContext* hc_ : RecordContexts(Arg(c, 0))) hc_->method(DxvkHost<type>(Arg(c, 1)), nullptr, 0); \
++    Rec(Arg(c, 0), &ID3D11DeviceContext::method, DxvkHost<type>(Arg(c, 1)), nullptr, 0u);  \
+     return 0;                                                                              \
+   }
+ D3D11_SET_SHADER(VSSetShader, D3dVsSetShader, ID3D11VertexShader)
+@@ -1332,7 +1698,7 @@ D3D11_SET_SHADER(CSSetShader, D3dCsSetShader, ID3D11ComputeShader)
+ 
+ #define D3D11_SIMPLE_CONTEXT(method, handler, args)                                        \
+   HLE_NAMED_X(kDll, "ID3D11DeviceContext::" #method, handler, kCdecl, true) {            \
+-    for (ID3D11DeviceContext* hc_ : RecordContexts(Arg(c, 0))) hc_->method args;                                 \
++    RecCall(Arg(c, 0), &ID3D11DeviceContext::method) args;                                \
+     return 0;                                                                              \
+   }
+ // Draws and dispatches warn about counts no real frame uses (a garbage
+@@ -1351,7 +1717,7 @@ void CheckWorkSize(const char* method, const Ctx& c, int nargs, uint64_t limit)
+ #define D3D11_CHECKED_CONTEXT(method, handler, nargs, limit, args)                                        \
+   HLE_NAMED_X(kDll, "ID3D11DeviceContext::" #method, handler, kCdecl, true) {            \
+     CheckWorkSize(#method, c, nargs, limit);                                             \
+-    for (ID3D11DeviceContext* hc_ : RecordContexts(Arg(c, 0))) hc_->method args;                                 \
++    RecCall(Arg(c, 0), &ID3D11DeviceContext::method) args;                                \
+     return 0;                                                                              \
+   }
+ D3D11_CHECKED_CONTEXT(DrawIndexed, D3dDrawIndexed, 1, 1u << 24,
+@@ -1379,9 +1745,10 @@ D3D11_SIMPLE_CONTEXT(IASetPrimitiveTopology, D3dIaSetTopology,
+ D3D11_SIMPLE_CONTEXT(RSSetState, D3dRsSetState, (DxvkHost<ID3D11RasterizerState>(Arg(c, 1))))
+ D3D11_SIMPLE_CONTEXT(RSSetViewports, D3dRsSetViewports,
+                      (uint32_t(Arg(c, 1)),
+-                      reinterpret_cast<const D3D11_VIEWPORT*>(Ptr(Arg(c, 2)))))
++                      Arr(reinterpret_cast<const D3D11_VIEWPORT*>(Ptr(Arg(c, 2))), uint32_t(Arg(c, 1)))))
+ D3D11_SIMPLE_CONTEXT(RSSetScissorRects, D3dRsSetScissors,
+-                     (uint32_t(Arg(c, 1)), reinterpret_cast<const D3D11_RECT*>(Ptr(Arg(c, 2)))))
++                     (uint32_t(Arg(c, 1)),
++                      Arr(reinterpret_cast<const D3D11_RECT*>(Ptr(Arg(c, 2))), uint32_t(Arg(c, 1)))))
+ D3D11_SIMPLE_CONTEXT(OMSetDepthStencilState, D3dOmSetDepthState,
+                      (DxvkHost<ID3D11DepthStencilState>(Arg(c, 1)), uint32_t(Arg(c, 2))))
+ D3D11_SIMPLE_CONTEXT(ClearState, D3dClearState, ())
+@@ -1407,7 +1774,7 @@ HLE_NAMED_X(kDll, "ID3D11DeviceContext::End", D3dEnd, kCdecl, true) {
+   // Both contexts end the query (a predicate begun and not ended would skip
+   // the blend list's predicated draws). GetData on one ended in the list
+   // still being recorded has to run that list first.
+-  for (ID3D11DeviceContext* hc_ : RecordContexts(Arg(c, 0))) hc_->End(query);
++  Rec(Arg(c, 0), &ID3D11DeviceContext::End, query);
+   if (g_rec.deferred && DxvkHost<ID3D11DeviceContext>(Arg(c, 0)) == g_rec.immediate)
+     g_rec.ended.push_back(query);
+   return 0;
+@@ -1421,14 +1788,14 @@ HLE_NAMED_X(kDll, "ID3D11DeviceContext::IASetVertexBuffers", D3dIaSetVertexBuffe
+             kCdecl, true) {
+   uint32_t count = uint32_t(Arg(c, 2));
+   auto buffers = GuestInterfaces<ID3D11Buffer>(Arg(c, 3), count);
+-  for (ID3D11DeviceContext* hc_ : RecordContexts(Arg(c, 0))) hc_->IASetVertexBuffers(
+-      uint32_t(Arg(c, 1)), count, buffers.data(), reinterpret_cast<const UINT*>(Ptr(Arg(c, 4))),
+-      reinterpret_cast<const UINT*>(Ptr(Arg(c, 5))));
++  Rec(Arg(c, 0), &ID3D11DeviceContext::IASetVertexBuffers, uint32_t(Arg(c, 1)), count,
++      Arr(buffers.data(), count), Arr(reinterpret_cast<const UINT*>(Ptr(Arg(c, 4))), count),
++      Arr(reinterpret_cast<const UINT*>(Ptr(Arg(c, 5))), count));
+   return 0;
+ }
+ HLE_NAMED_X(kDll, "ID3D11DeviceContext::IASetIndexBuffer", D3dIaSetIndexBuffer, kCdecl, true) {
+-  for (ID3D11DeviceContext* hc_ : RecordContexts(Arg(c, 0))) hc_->IASetIndexBuffer(
+-      DxvkHost<ID3D11Buffer>(Arg(c, 1)), DXGI_FORMAT(uint32_t(Arg(c, 2))), uint32_t(Arg(c, 3)));
++  Rec(Arg(c, 0), &ID3D11DeviceContext::IASetIndexBuffer, DxvkHost<ID3D11Buffer>(Arg(c, 1)),
++      DXGI_FORMAT(uint32_t(Arg(c, 2))), uint32_t(Arg(c, 3)));
+   return 0;
+ }
+ // <ID>_DUMP_TARGETS=<seconds>: from that long after the first render-target
+@@ -1645,8 +2012,8 @@ HLE_NAMED_X(kDll, "ID3D11DeviceContext::OMSetRenderTargets", D3dOmSetTargets, kC
+   uint32_t count = uint32_t(Arg(c, 1));
+   auto views = GuestInterfaces<ID3D11RenderTargetView>(Arg(c, 2), count);
+   MaybeDumpTarget(HostContext(Arg(c, 0)), count ? views[0] : nullptr);
+-  for (ID3D11DeviceContext* hc_ : RecordContexts(Arg(c, 0))) hc_->OMSetRenderTargets(
+-      count, views.data(), DxvkHost<ID3D11DepthStencilView>(Arg(c, 3)));
++  Rec(Arg(c, 0), &ID3D11DeviceContext::OMSetRenderTargets, count, Arr(views.data(), count),
++      DxvkHost<ID3D11DepthStencilView>(Arg(c, 3)));
+   return 0;
+ }
+ HLE_NAMED_X(kDll, "ID3D11DeviceContext::OMSetRenderTargetsAndUnorderedAccessViews",
+@@ -1662,69 +2029,73 @@ HLE_NAMED_X(kDll, "ID3D11DeviceContext::OMSetRenderTargetsAndUnorderedAccessView
+     uavs = GuestInterfaces<ID3D11UnorderedAccessView>(Arg(c, 6), uav_count);
+   if (rt_count != kKeep)
+     MaybeDumpTarget(HostContext(Arg(c, 0)), rt_count ? views[0] : nullptr);
+-  for (ID3D11DeviceContext* hc_ : RecordContexts(Arg(c, 0))) hc_->OMSetRenderTargetsAndUnorderedAccessViews(
+-      rt_count, rt_count != kKeep ? views.data() : nullptr,
++  using RtvP = ID3D11RenderTargetView*;
++  using UavP = ID3D11UnorderedAccessView*;
++  Rec(Arg(c, 0), &ID3D11DeviceContext::OMSetRenderTargetsAndUnorderedAccessViews, rt_count,
++      rt_count != kKeep ? Arr(views.data(), rt_count) : Arr<RtvP>(nullptr, 0),
+       DxvkHost<ID3D11DepthStencilView>(Arg(c, 3)), uint32_t(Arg(c, 4)), uav_count,
+-      uav_count != kKeep ? uavs.data() : nullptr,
+-      uav_count != kKeep ? reinterpret_cast<const UINT*>(Ptr(Arg(c, 7))) : nullptr);
++      uav_count != kKeep ? Arr(uavs.data(), uav_count) : Arr<UavP>(nullptr, 0),
++      uav_count != kKeep ? Arr(reinterpret_cast<const UINT*>(Ptr(Arg(c, 7))), uav_count)
++                         : Arr<UINT>(nullptr, 0));
+   return 0;
+ }
+ HLE_NAMED_X(kDll, "ID3D11DeviceContext::CSSetUnorderedAccessViews", D3dCsSetUav,
+             kCdecl, true) {
+   uint32_t count = uint32_t(Arg(c, 2));
+   auto uavs = GuestInterfaces<ID3D11UnorderedAccessView>(Arg(c, 3), count);
+-  for (ID3D11DeviceContext* hc_ : RecordContexts(Arg(c, 0))) hc_->CSSetUnorderedAccessViews(
+-      uint32_t(Arg(c, 1)), count, uavs.data(), reinterpret_cast<const UINT*>(Ptr(Arg(c, 4))));
++  Rec(Arg(c, 0), &ID3D11DeviceContext::CSSetUnorderedAccessViews, uint32_t(Arg(c, 1)), count,
++      Arr(uavs.data(), count), Arr(reinterpret_cast<const UINT*>(Ptr(Arg(c, 4))), count));
+   return 0;
+ }
+ HLE_NAMED_X(kDll, "ID3D11DeviceContext::OMSetBlendState", D3dOmSetBlendState, kCdecl, true) {
+-  for (ID3D11DeviceContext* hc_ : RecordContexts(Arg(c, 0))) hc_->OMSetBlendState(
+-      DxvkHost<ID3D11BlendState>(Arg(c, 1)), reinterpret_cast<const FLOAT*>(Ptr(Arg(c, 2))),
+-      uint32_t(Arg(c, 3)));
++  Rec(Arg(c, 0), &ID3D11DeviceContext::OMSetBlendState, DxvkHost<ID3D11BlendState>(Arg(c, 1)),
++      Arr(reinterpret_cast<const FLOAT*>(Ptr(Arg(c, 2))), 4), uint32_t(Arg(c, 3)));
+   return 0;
+ }
+ HLE_NAMED_X(kDll, "ID3D11DeviceContext::SOSetTargets", D3dSoSetTargets, kCdecl, true) {
+   uint32_t count = uint32_t(Arg(c, 1));
+   auto buffers = GuestInterfaces<ID3D11Buffer>(Arg(c, 2), count);
+-  for (ID3D11DeviceContext* hc_ : RecordContexts(Arg(c, 0))) hc_->SOSetTargets(
+-      count, buffers.data(), reinterpret_cast<const UINT*>(Ptr(Arg(c, 3))));
++  Rec(Arg(c, 0), &ID3D11DeviceContext::SOSetTargets, count, Arr(buffers.data(), count),
++      Arr(reinterpret_cast<const UINT*>(Ptr(Arg(c, 3))), count));
+   return 0;
+ }
+ HLE_NAMED_X(kDll, "ID3D11DeviceContext::ClearRenderTargetView", D3dClearRtv, kCdecl, true) {
+-  for (ID3D11DeviceContext* hc_ : RecordContexts(Arg(c, 0))) hc_->ClearRenderTargetView(
+-      DxvkHost<ID3D11RenderTargetView>(Arg(c, 1)), reinterpret_cast<const FLOAT*>(Ptr(Arg(c, 2))));
++  Rec(Arg(c, 0), &ID3D11DeviceContext::ClearRenderTargetView,
++      DxvkHost<ID3D11RenderTargetView>(Arg(c, 1)),
++      Arr(reinterpret_cast<const FLOAT*>(Ptr(Arg(c, 2))), 4));
+   return 0;
+ }
+ HLE_NAMED_X(kDll, "ID3D11DeviceContext::ClearUnorderedAccessViewUint", D3dClearUavUint,
+             kCdecl, true) {
+-  for (ID3D11DeviceContext* hc_ : RecordContexts(Arg(c, 0))) hc_->ClearUnorderedAccessViewUint(
+-      DxvkHost<ID3D11UnorderedAccessView>(Arg(c, 1)), reinterpret_cast<const UINT*>(Ptr(Arg(c, 2))));
++  Rec(Arg(c, 0), &ID3D11DeviceContext::ClearUnorderedAccessViewUint,
++      DxvkHost<ID3D11UnorderedAccessView>(Arg(c, 1)),
++      Arr(reinterpret_cast<const UINT*>(Ptr(Arg(c, 2))), 4));
+   return 0;
+ }
+ HLE_NAMED_X(kDll, "ID3D11DeviceContext::ClearUnorderedAccessViewFloat", D3dClearUavFloat,
+             kCdecl, true) {
+-  for (ID3D11DeviceContext* hc_ : RecordContexts(Arg(c, 0))) hc_->ClearUnorderedAccessViewFloat(
++  Rec(Arg(c, 0), &ID3D11DeviceContext::ClearUnorderedAccessViewFloat,
+       DxvkHost<ID3D11UnorderedAccessView>(Arg(c, 1)),
+-      reinterpret_cast<const FLOAT*>(Ptr(Arg(c, 2))));
++      Arr(reinterpret_cast<const FLOAT*>(Ptr(Arg(c, 2))), 4));
+   return 0;
+ }
+ HLE_NAMED_X(kDll, "ID3D11DeviceContext::ClearDepthStencilView", D3dClearDsv, kCdecl, true) {
+-  for (ID3D11DeviceContext* hc_ : RecordContexts(Arg(c, 0))) hc_->ClearDepthStencilView(
++  Rec(Arg(c, 0), &ID3D11DeviceContext::ClearDepthStencilView,
+       DxvkHost<ID3D11DepthStencilView>(Arg(c, 1)), uint32_t(Arg(c, 2)), ArgF(c, 3),
+       uint8_t(Arg(c, 4)));
+   return 0;
+ }
+ HLE_NAMED_X(kDll, "ID3D11DeviceContext::CopyResource", D3dCopyResource, kCdecl, true) {
+-  for (ID3D11DeviceContext* hc_ : RecordContexts(Arg(c, 0))) hc_->CopyResource(DxvkHost<ID3D11Resource>(Arg(c, 1)),
+-                                                        DxvkHost<ID3D11Resource>(Arg(c, 2)));
++  Rec(Arg(c, 0), &ID3D11DeviceContext::CopyResource, DxvkHost<ID3D11Resource>(Arg(c, 1)),
++      DxvkHost<ID3D11Resource>(Arg(c, 2)));
+   return 0;
+ }
+ HLE_NAMED_X(kDll, "ID3D11DeviceContext::CopySubresourceRegion", D3dCopySubresource,
+             kCdecl, true) {
+-  for (ID3D11DeviceContext* hc_ : RecordContexts(Arg(c, 0))) hc_->CopySubresourceRegion(
++  Rec(Arg(c, 0), &ID3D11DeviceContext::CopySubresourceRegion,
+       DxvkHost<ID3D11Resource>(Arg(c, 1)), uint32_t(Arg(c, 2)), uint32_t(Arg(c, 3)),
+       uint32_t(Arg(c, 4)), uint32_t(Arg(c, 5)), DxvkHost<ID3D11Resource>(Arg(c, 6)),
+-      uint32_t(Arg(c, 7)), reinterpret_cast<const D3D11_BOX*>(Ptr(Arg(c, 8))));
++      uint32_t(Arg(c, 7)), Arr(reinterpret_cast<const D3D11_BOX*>(Ptr(Arg(c, 8))), 1));
+   return 0;
+ }
+ HLE_NAMED_X(kDll, "ID3D11DeviceContext::UpdateSubresource", D3dUpdateSubresource,
+@@ -1739,38 +2110,52 @@ HLE_NAMED_X(kDll, "ID3D11DeviceContext::UpdateSubresource", D3dUpdateSubresource
+   }
+   ID3D11Resource* res = DxvkHost<ID3D11Resource>(Arg(c, 1));
+   const auto* box = reinterpret_cast<const D3D11_BOX*>(Ptr(Arg(c, 3)));
+-  for (ID3D11DeviceContext* hc_ : RecordContexts(Arg(c, 0))) {
+-    const void* src = Ptr(Arg(c, 4));
+-    if (hc_ == g_rec.blend && src) {
+-      if (IsConstantBuffer(res)) {
+-        D3D11_BUFFER_DESC desc{};
+-        static_cast<ID3D11Buffer*>(res)->GetDesc(&desc);
+-        src = BlendUpload(src, box ? box->right - box->left : desc.ByteWidth);
+-      }
++  const void* src = Ptr(Arg(c, 4));
++  ID3D11DeviceContext* host = DxvkHost<ID3D11DeviceContext>(Arg(c, 0));
++  if (g_rec.deferred && host == g_rec.immediate) host = g_rec.deferred;
++  host->UpdateSubresource(res, uint32_t(Arg(c, 2)), box, src, uint32_t(Arg(c, 5)),
++                          uint32_t(Arg(c, 6)));
++  if (host == g_rec.deferred && g_rec.blend) {
++    D3D11_BUFFER_DESC desc{};
++    if (src && BufferDesc(res, &desc)) {
++      const uint32_t size = box ? box->right - box->left : desc.ByteWidth;
++      uint8_t* p = g_worker.Emplace<QueuedWrite>(
++          size, res, uint32_t(Arg(c, 2)), size, false, false,
++          (desc.BindFlags & D3D11_BIND_CONSTANT_BUFFER) != 0, false, box);
++      std::memcpy(p, src, size);
++      g_worker.Commit();
++    } else {
++      // Texture uploads: their size depends on the format; make the call
++      // directly once the worker is idle.
++      g_worker.Drain();
++      ++g_worker.drains;
++      g_rec.blend->UpdateSubresource(res, uint32_t(Arg(c, 2)), box, src, uint32_t(Arg(c, 5)),
++                                     uint32_t(Arg(c, 6)));
+     }
+-    hc_->UpdateSubresource(res, uint32_t(Arg(c, 2)), box, src, uint32_t(Arg(c, 5)),
+-                           uint32_t(Arg(c, 6)));
+   }
+   return 0;
+ }
+ HLE_NAMED_X(kDll, "ID3D11DeviceContext::CopyStructureCount", D3dCopyStructureCount,
+             kCdecl, true) {
+-  for (ID3D11DeviceContext* hc_ : RecordContexts(Arg(c, 0))) hc_->CopyStructureCount(
++  Rec(Arg(c, 0), &ID3D11DeviceContext::CopyStructureCount,
+       DxvkHost<ID3D11Buffer>(Arg(c, 1)), uint32_t(Arg(c, 2)),
+       DxvkHost<ID3D11UnorderedAccessView>(Arg(c, 3)));
+   return 0;
+ }
+ HLE_NAMED_X(kDll, "ID3D11DeviceContext::ResolveSubresource", D3dResolveSubresource,
+             kCdecl, true) {
+-  for (ID3D11DeviceContext* hc_ : RecordContexts(Arg(c, 0))) hc_->ResolveSubresource(
++  Rec(Arg(c, 0), &ID3D11DeviceContext::ResolveSubresource,
+       DxvkHost<ID3D11Resource>(Arg(c, 1)), uint32_t(Arg(c, 2)),
+       DxvkHost<ID3D11Resource>(Arg(c, 3)), uint32_t(Arg(c, 4)), DXGI_FORMAT(uint32_t(Arg(c, 5))));
+   return 0;
+ }
+ HLE_NAMED_X(kDll, "ID3D11DeviceContext::GetData", D3dGetData, kCdecl, true) {
+-  std::lock_guard<std::recursive_mutex> lock(D3d11ImmediateLock());
+   ID3D11DeviceContext* host = DxvkHost<ID3D11DeviceContext>(Arg(c, 0));
+   ID3D11Asynchronous* query = DxvkHost<ID3D11Asynchronous>(Arg(c, 1));
++  if (g_rec.deferred && host == g_rec.immediate &&
++      std::find(g_rec.ended.begin(), g_rec.ended.end(), query) != g_rec.ended.end())
++    D3d11BeforeSync();
++  std::lock_guard<std::recursive_mutex> lock(D3d11ImmediateLock());
+   if (g_rec.deferred && host == g_rec.immediate &&
+       std::find(g_rec.ended.begin(), g_rec.ended.end(), query) == g_rec.ended.end())
+     return uint32_t(host->GetData(query, Ptr(Arg(c, 2)), uint32_t(Arg(c, 3)),
+@@ -1805,8 +2190,7 @@ HLE_NAMED_X(kDll, "ID3D11DeviceContext::FinishCommandList", D3dFinishCommandList
+   HLE_NAMED_X(kDll, "ID3D11DeviceContext::" #method, handler, kCdecl, true) {            \
+     uint32_t count = uint32_t(Arg(c, 2));                                                  \
+     std::vector<type*> values(count);                                                      \
+-    for (ID3D11DeviceContext* hc_ : RecordContexts(Arg(c, 0))) hc_->method(uint32_t(Arg(c, 1)), count,            \
+-                                                     values.data());                        \
++    HostContext(Arg(c, 0))->method(uint32_t(Arg(c, 1)), count, values.data());             \
+     WrapInterfaces(values.data(), count, Arg(c, 3));                                       \
+     return 0;                                                                              \
+   }
+@@ -1836,7 +2220,7 @@ D3D11_GET_BINDINGS(CSGetUnorderedAccessViews, D3dCsGetUav, ID3D11UnorderedAccess
+     type* shader = nullptr;                                                                \
+     UINT count = Arg(c, 3) ? Rd32(Arg(c, 3)) : 0;                                          \
+     std::vector<ID3D11ClassInstance*> instances(count);                                    \
+-    for (ID3D11DeviceContext* hc_ : RecordContexts(Arg(c, 0))) hc_->method(                                     \
++    HostContext(Arg(c, 0))->method(                                                       \
+         &shader, Arg(c, 2) ? instances.data() : nullptr, Arg(c, 3) ? &count : nullptr);     \
+     if (Arg(c, 1)) Wr64(Arg(c, 1), WrapOut(shader)); else if (shader) shader->Release();    \
+     if (Arg(c, 2)) WrapInterfaces(instances.data(), std::min<uint32_t>(count, instances.size()), Arg(c, 2)); \
+diff --git a/platforms/win32/src/win32/d3d11.h b/platforms/win32/src/win32/d3d11.h
+index 0497e91..1676401 100644
+--- a/platforms/win32/src/win32/d3d11.h
++++ b/platforms/win32/src/win32/d3d11.h
+@@ -30,8 +30,17 @@ bool D3d11ExecuteBlended();
+ // (or null), D3d11Execute runs and releases one under the immediate-context
+ // lock, which every other immediate-context use also takes.
+ ID3D11CommandList* D3d11FinishBlended(bool* show);
++// The same in two halves: queue the end of the blend list (returns a ticket,
++// 0 when not interpolating), then wait for it on another thread.
++uint64_t D3d11QueueFinishBlended(bool* show);
++ID3D11CommandList* D3d11TakeBlended(uint64_t ticket);
+ ID3D11CommandList* D3d11FinishMain();
+ void D3d11Execute(ID3D11CommandList* list);
+ std::recursive_mutex& D3d11ImmediateLock();
++// Set by the presenter: waits until every frame handed to it has run, so a
++// mid-frame sync on the immediate context keeps frame order. Called without
++// the immediate-context lock held.
++extern void (*g_d3d11_before_sync)();
++void D3d11BeforeSync();
+ 
+ }  // namespace recomp::hle
+diff --git a/platforms/win32/src/win32/dxgi.cpp b/platforms/win32/src/win32/dxgi.cpp
+index a2559a3..9d76b81 100644
+--- a/platforms/win32/src/win32/dxgi.cpp
++++ b/platforms/win32/src/win32/dxgi.cpp
+@@ -501,15 +501,20 @@ namespace {
+ struct Presenter {
+   std::mutex mu;
+   std::condition_variable cv;
+-  bool busy = false;
++  bool queued = false;  // a frame handed over and not yet taken
++  bool active = false;  // the presenter is showing a frame
+   IDXGISwapChain* swap = nullptr;
+-  ID3D11CommandList* blend = nullptr;
++  uint64_t blend = 0;  // ticket of the blend list
+   ID3D11CommandList* main = nullptr;
+   bool show_blend = false;
+   uint32_t interval = 0, flags = 0;
+   double half_ns = 8.33e6;  // half the measured frame interval
+   std::chrono::steady_clock::time_point last;
+   uint64_t frames = 0, late = 0;
++  // Nanoseconds since the last report: presenter waiting for the blend list,
++  // running and showing it, running and showing the real frame; the game
++  // waiting for the presenter.
++  int64_t t_take = 0, t_blend = 0, t_main = 0, t_game = 0;
+ };
+ Presenter g_pres;
+ 
+@@ -517,15 +522,22 @@ void PresenterLoop() {
+   static const bool dump_blend = Env("DUMP_BLENDED") != nullptr;
+   for (;;) {
+     std::unique_lock<std::mutex> lock(g_pres.mu);
+-    g_pres.cv.wait(lock, [] { return g_pres.busy; });
++    g_pres.cv.wait(lock, [] { return g_pres.queued; });
+     IDXGISwapChain* swap = g_pres.swap;
+-    ID3D11CommandList* blend = g_pres.blend;
++    const uint64_t ticket = g_pres.blend;
+     ID3D11CommandList* main = g_pres.main;
+-    const bool show = g_pres.show_blend;
++    const bool want = g_pres.show_blend;
+     const uint32_t interval = g_pres.interval, flags = g_pres.flags;
+     const auto half = std::chrono::nanoseconds(int64_t(g_pres.half_ns));
++    g_pres.queued = false;
++    g_pres.active = true;
+     lock.unlock();
++    g_pres.cv.notify_all();
++    const auto tw = std::chrono::steady_clock::now();
++    ID3D11CommandList* blend = D3d11TakeBlended(ticket);  // the worker may still be recording it
++    const bool show = want && blend;
+     const auto t0 = std::chrono::steady_clock::now();
++    g_pres.t_take += (t0 - tw).count();
+     {
+       std::lock_guard<std::recursive_mutex> imm(D3d11ImmediateLock());
+       D3d11Execute(blend);
+@@ -534,19 +546,22 @@ void PresenterLoop() {
+         swap->Present(0, flags);
+       }
+     }
++    g_pres.t_blend += (std::chrono::steady_clock::now() - t0).count();
+     if (show) {
+       if (std::chrono::steady_clock::now() > t0 + half) ++g_pres.late;
+       std::this_thread::sleep_until(t0 + half);
+     }
++    const auto t1 = std::chrono::steady_clock::now();
+     {
+       std::lock_guard<std::recursive_mutex> imm(D3d11ImmediateLock());
+       D3d11Execute(main);
+       if (!dump_blend) DumpFrame(swap);
+       swap->Present(interval, flags);
+     }
++    g_pres.t_main += (std::chrono::steady_clock::now() - t1).count();
+     swap->Release();
+     lock.lock();
+-    g_pres.busy = false;
++    g_pres.active = false;
+     lock.unlock();
+     g_pres.cv.notify_all();
+   }
+@@ -554,7 +569,15 @@ void PresenterLoop() {
+ 
+ void PresenterWaitIdle() {
+   std::unique_lock<std::mutex> lock(g_pres.mu);
+-  g_pres.cv.wait(lock, [] { return !g_pres.busy; });
++  g_pres.cv.wait(lock, [] { return !g_pres.queued && !g_pres.active; });
++}
++
++// The game goes on with its next frame while the presenter still shows this
++// one; it waits only when the frame before is not yet taken. (Waiting for the
++// presenter to finish would add the half-interval pause to every frame.)
++void PresenterWaitTaken() {
++  std::unique_lock<std::mutex> lock(g_pres.mu);
++  g_pres.cv.wait(lock, [] { return !g_pres.queued; });
+ }
+ 
+ bool PacingOn() {
+@@ -575,9 +598,12 @@ HLE_NAMED_X(kDll, "IDXGISwapChain::Present", DxgiSwapPresent, kCdecl, true) {
+       t.detach();
+       return t;
+     }();
+-    PresenterWaitIdle();
++    g_d3d11_before_sync = PresenterWaitIdle;
++    const auto tg = std::chrono::steady_clock::now();
++    PresenterWaitTaken();
++    g_pres.t_game += (std::chrono::steady_clock::now() - tg).count();
+     bool show = false;
+-    ID3D11CommandList* blend = D3d11FinishBlended(&show);
++    const uint64_t blend = D3d11QueueFinishBlended(&show);
+     ID3D11CommandList* main = D3d11FinishMain();
+     const auto now = std::chrono::steady_clock::now();
+     std::lock_guard<std::mutex> lock(g_pres.mu);
+@@ -589,10 +615,13 @@ HLE_NAMED_X(kDll, "IDXGISwapChain::Present", DxgiSwapPresent, kCdecl, true) {
+       g_pres.half_ns += (h - g_pres.half_ns) * 0.1;
+     }
+     g_pres.last = now;
+-    if (g_pres.frames % 600 == 0)
+-      std::fprintf(stderr, "[dxgi] paced: %llu frames, half interval %.2f ms, %llu late\n",
++    if (g_pres.frames % 600 == 0) {
++      std::fprintf(stderr, "[dxgi] paced: %llu frames, half interval %.2f ms, %llu late; ms/frame: take %.2f blend %.2f main %.2f game-wait %.2f\n",
+                    (unsigned long long)g_pres.frames, g_pres.half_ns / 1e6,
+-                   (unsigned long long)g_pres.late);
++                   (unsigned long long)g_pres.late, g_pres.t_take / 6e8, g_pres.t_blend / 6e8,
++                   g_pres.t_main / 6e8, g_pres.t_game / 6e8);
++      g_pres.t_take = g_pres.t_blend = g_pres.t_main = g_pres.t_game = 0;
++    }
+     swap->AddRef();
+     g_pres.swap = swap;
+     g_pres.blend = blend;
+@@ -600,7 +629,7 @@ HLE_NAMED_X(kDll, "IDXGISwapChain::Present", DxgiSwapPresent, kCdecl, true) {
+     g_pres.show_blend = show;
+     g_pres.interval = uint32_t(Arg(c, 1));
+     g_pres.flags = uint32_t(Arg(c, 2));
+-    g_pres.busy = true;
++    g_pres.queued = true;
+     g_pres.cv.notify_all();
+     return 0;
+   }
+diff --git a/platforms/win32/src/win32/dxvk.h b/platforms/win32/src/win32/dxvk.h
+index 76c6156..77f0966 100644
+--- a/platforms/win32/src/win32/dxvk.h
++++ b/platforms/win32/src/win32/dxvk.h
+@@ -15,7 +15,6 @@ struct DxvkMapping {
+   gaddr guest_data = 0;
+   size_t size = 0;
+   uint32_t type = 0;
+-  void* blend_data = nullptr;  // the same map on the interpolation context
+ };
+ 
+ struct DxvkObject : com::Object {
+@@ -24,7 +23,6 @@ struct DxvkObject : com::Object {
+   // Frame recording: the last full contents of a dynamic buffer, and the
+   // command list (serial) in which it was last mapped with WRITE_DISCARD.
+   uint64_t discard_list = 0;
+-  uint64_t blend_discard_list = 0;  // the same for the interpolation context
+ 
+   ~DxvkObject();
+ };
+-- 
+2.51.0.windows.1
+

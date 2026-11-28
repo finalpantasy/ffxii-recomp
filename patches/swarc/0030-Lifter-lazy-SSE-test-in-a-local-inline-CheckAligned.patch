@@ -1,0 +1,194 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: finalpantasy <finalpantasy@users.noreply.github.com>
+Date: Fri, 27 Nov 2026 08:37:15 -0500
+Subject: [PATCH 30/34] Lifter: lazy-SSE test in a local, inline CheckAligned
+
+CacheXmm keeps the quiet::Lazy test in a per-function bool LZ, set at
+entry, after LIFT_RELOAD and after Ldmxcsr, and passes it to new Arith,
+Sqrt, MinMax and Comi overloads, so clang no longer reloads c.mxcsr and
+g_lazy_flags around every guest store. sse::CheckAligned is inline, with
+the failure path in the cold CheckAlignedFail.
+
+FFXII at 120 fps and equal machine load: game thread 65% -> 53% busy.
+ctest 59/59; FFXII int64 and sse64 oracles 0 failed, native and soft.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/x86/sse.cpp           | 12 ++----------
+ src/x86/sse.h             | 17 +++++++++++++----
+ src/x86/sse_quiet.h       | 23 +++++++++++++++++------
+ tools/lifter_x86/emit.cpp | 24 ++++++++++++++++++++++++
+ 4 files changed, 56 insertions(+), 20 deletions(-)
+
+diff --git a/src/x86/sse.cpp b/src/x86/sse.cpp
+index 0accab8..e72d8eb 100644
+--- a/src/x86/sse.cpp
++++ b/src/x86/sse.cpp
+@@ -489,17 +489,9 @@ void RcpOol(Xmm& d, const Xmm& s) {
+   d = r;
+ }
+ 
+-void CheckAligned(Ctx& c, uint64_t a, uint64_t va) {
++void CheckAlignedFail(Ctx& c, uint64_t a, uint64_t va, unsigned align) {
+   (void)c;
+-  if (a & 15)
+-    FatalF("sse: misaligned 16-byte operand %08llX at %08llX (#GP)",
+-           (unsigned long long)a, (unsigned long long)va);
+-}
+-
+-void CheckAligned(Ctx& c, uint64_t a, uint64_t va, unsigned align) {
+-  (void)c;
+-  if (a & (align - 1))
+-    FatalF("sse: misaligned %u-byte operand %08llX at %08llX (#GP)", align,
++  FatalF("sse: misaligned %u-byte operand %08llX at %08llX (#GP)", align,
+            (unsigned long long)a, (unsigned long long)va);
+ }
+ 
+diff --git a/src/x86/sse.h b/src/x86/sse.h
+index aa990b3..9a17a07 100644
+--- a/src/x86/sse.h
++++ b/src/x86/sse.h
+@@ -52,9 +52,14 @@ inline void St(uint8_t* B, uint64_t a, const Xmm& x, int bytes) {
+ }
+ // Legacy-SSE m128 operands other than movups/movupd/movdqu must be 16-byte
+ // aligned (#GP otherwise): fatal, naming the instruction.
+-void CheckAligned(Ctx& c, uint64_t a, uint64_t va);
++[[gnu::cold]] void CheckAlignedFail(Ctx& c, uint64_t a, uint64_t va, unsigned align);
++[[gnu::always_inline]] inline void CheckAligned(Ctx& c, uint64_t a, uint64_t va) {
++  if (a & 15) [[unlikely]] CheckAlignedFail(c, a, va, 16);
++}
+ // The same for VEX moves that require `align` (16 or 32) bytes.
+-void CheckAligned(Ctx& c, uint64_t a, uint64_t va, unsigned align);
++[[gnu::always_inline]] inline void CheckAligned(Ctx& c, uint64_t a, uint64_t va, unsigned align) {
++  if (a & (align - 1)) [[unlikely]] CheckAlignedFail(c, a, va, align);
++}
+ 
+ // ---- floating point ---------------------------------------------------
+ // Arith, Sqrt and MinMax (inline quiet paths): x86/sse_quiet.h.
+@@ -645,10 +650,10 @@ inline void ShufPd(Xmm& d, const Xmm& s, uint8_t imm) {
+ }
+ // Under lazy flags (all exceptions masked, nearest, no DAZ/FTZ) the result
+ // needs no MXCSR work: the low lanes compared as the host compares them.
+-[[gnu::always_inline]] inline int Comi(Ctx& c, bool dbl, bool ordered, const Xmm& a,
++[[gnu::always_inline]] inline int Comi(bool lz, Ctx& c, bool dbl, bool ordered, const Xmm& a,
+                                        const Xmm& b, uint64_t va) {
+ #if defined(__x86_64__)
+-  if (quiet::Lazy(c)) {
++  if (lz) {
+     if (dbl) {
+       double x, y;
+       std::memcpy(&x, a.b, 8);
+@@ -664,6 +669,10 @@ inline void ShufPd(Xmm& d, const Xmm& s, uint8_t imm) {
+   const Xmm ta = a, tb = b;
+   return ComiOol(c, dbl, ordered, ta, tb, va);
+ }
++[[gnu::always_inline]] inline int Comi(Ctx& c, bool dbl, bool ordered, const Xmm& a,
++                                       const Xmm& b, uint64_t va) {
++  return Comi(quiet::Lazy(c), c, dbl, ordered, a, b, va);
++}
+ [[gnu::always_inline]] inline void Rsqrt(Xmm& d, const Xmm& s) { RECOMP_SSE_DS(RsqrtOol(td, ts)); }
+ [[gnu::always_inline]] inline void Cvtsi2sd(Xmm& d, int32_t v) {
+   Xmm td = d;
+diff --git a/src/x86/sse_quiet.h b/src/x86/sse_quiet.h
+index a4b5a0e..935ad4e 100644
+--- a/src/x86/sse_quiet.h
++++ b/src/x86/sse_quiet.h
+@@ -197,9 +197,10 @@ template <bool D>
+ 
+ // d = d op s, lane-wise: `lanes` lanes of double (dbl) or float. Scalar
+ // forms pass lanes = 1 and keep the upper lanes of d.
+-[[gnu::always_inline]] inline void Arith(Ctx& c, Op op, bool dbl, int lanes, Xmm& d, const Xmm& s, uint64_t va) {
++// `lz` is quiet::Lazy(c), which lifted functions keep in a local (LZ).
++[[gnu::always_inline]] inline void Arith(bool lz, Ctx& c, Op op, bool dbl, int lanes, Xmm& d, const Xmm& s, uint64_t va) {
+ #if defined(__x86_64__)
+-  if (quiet::KnownLanes(dbl, lanes) && quiet::Lazy(c)) {
++  if (quiet::KnownLanes(dbl, lanes) && lz) {
+     dbl ? quiet::Bare<true>(op, lanes == 1, d, s) : quiet::Bare<false>(op, lanes == 1, d, s);
+     return;
+   }
+@@ -212,12 +213,15 @@ template <bool D>
+   ArithSlow(c, op, dbl, lanes, td, ts, va);
+   d = td;
+ }
++[[gnu::always_inline]] inline void Arith(Ctx& c, Op op, bool dbl, int lanes, Xmm& d, const Xmm& s, uint64_t va) {
++  Arith(quiet::Lazy(c), c, op, dbl, lanes, d, s, va);
++}
+ 
+ // SQRTSD/SQRTSS/SQRTPD/SQRTPS: d = sqrt(s), lane-wise; scalar forms keep
+ // the upper lanes of d.
+-[[gnu::always_inline]] inline void Sqrt(Ctx& c, bool dbl, int lanes, Xmm& d, const Xmm& s, uint64_t va) {
++[[gnu::always_inline]] inline void Sqrt(bool lz, Ctx& c, bool dbl, int lanes, Xmm& d, const Xmm& s, uint64_t va) {
+ #if defined(__x86_64__)
+-  if (quiet::KnownLanes(dbl, lanes) && quiet::Lazy(c)) {
++  if (quiet::KnownLanes(dbl, lanes) && lz) {
+     dbl ? quiet::Sqrt<true>(lanes == 1, d, s, false) : quiet::Sqrt<false>(lanes == 1, d, s, false);
+     return;
+   }
+@@ -230,14 +234,17 @@ template <bool D>
+   SqrtSlow(c, dbl, lanes, td, ts, va);
+   d = td;
+ }
++[[gnu::always_inline]] inline void Sqrt(Ctx& c, bool dbl, int lanes, Xmm& d, const Xmm& s, uint64_t va) {
++  Sqrt(quiet::Lazy(c), c, dbl, lanes, d, s, va);
++}
+ 
+ // MINSS/SD/PS/PD (max = false) and MAXSS/SD/PS/PD, lane-wise: d op s ? d : s.
+ // A NaN in either operand (invalid, quiet ones too) or equal values,
+ // zeros of either sign included, give s. Scalar forms keep d's upper lanes.
+-[[gnu::always_inline]] inline void MinMax(Ctx& c, bool max, bool dbl, int lanes, Xmm& d, const Xmm& s,
++[[gnu::always_inline]] inline void MinMax(bool lz, Ctx& c, bool max, bool dbl, int lanes, Xmm& d, const Xmm& s,
+                    uint64_t va) {
+ #if defined(__x86_64__)
+-  if (quiet::KnownLanes(dbl, lanes) && quiet::Lazy(c)) {
++  if (quiet::KnownLanes(dbl, lanes) && lz) {
+     dbl ? quiet::MinMax<true>(max, lanes == 1, d, s, false)
+         : quiet::MinMax<false>(max, lanes == 1, d, s, false);
+     return;
+@@ -252,5 +259,9 @@ template <bool D>
+   MinMaxSlow(c, max, dbl, lanes, td, ts, va);
+   d = td;
+ }
++[[gnu::always_inline]] inline void MinMax(Ctx& c, bool max, bool dbl, int lanes, Xmm& d, const Xmm& s,
++                   uint64_t va) {
++  MinMax(quiet::Lazy(c), c, max, dbl, lanes, d, s, va);
++}
+ 
+ }  // namespace recomp::sse
+diff --git a/tools/lifter_x86/emit.cpp b/tools/lifter_x86/emit.cpp
+index 1fe1c4b..24000a7 100644
+--- a/tools/lifter_x86/emit.cpp
++++ b/tools/lifter_x86/emit.cpp
+@@ -4029,6 +4029,30 @@ void Emitter::CacheXmm(std::string* out, size_t start) {
+     for (size_t p = 0; (p = body.find(a, p)) != std::string::npos; p += b.size())
+       body.replace(p, a.size(), b);
+   };
++  // The lazy-flags test (quiet::Lazy: lazy flags on, default MXCSR) reads
++  // c.mxcsr and a global on every SSE operation, and guest stores may alias
++  // both. MXCSR changes only in LDMXCSR and in calls, which all end in
++  // LIFT_RELOAD (the same rule the cached GPRs follow), so the function
++  // keeps the test in LZ and redoes it there.
++  static const char* const kLazyOps[] = {"Arith", "Sqrt", "MinMax", "Comi"};
++  bool lazy = false;
++  for (const char* op : kLazyOps) {
++    const std::string a = Fmt("::recomp::sse::%s(c, ", op);
++    if (body.find(a) == std::string::npos) continue;
++    lazy = true;
++    replace_all(a, Fmt("::recomp::sse::%s(LZ, c, ", op));
++  }
++  static const std::string kLz = " LZ = ::recomp::sse::quiet::Lazy(c);";
++  if (lazy) {
++    reload += kLz;
++    decl += " bool LZ = ::recomp::sse::quiet::Lazy(c);";
++    static const std::string kLd = "::recomp::sse::Ldmxcsr(";
++    for (size_t p = 0; (p = body.find(kLd, p)) != std::string::npos;) {
++      const size_t end = body.find(";", p);
++      body.insert(end + 1, kLz);
++      p = end + 1 + kLz.size();
++    }
++  }
+   replace_all("LIFT_SPILL;", "LIFT_SPILL;" + spill);
+   replace_all("LIFT_RELOAD;", "LIFT_RELOAD;" + reload);
+   body.insert(body.find(kEnter) + kEnter.size(), " " + decl + "\n");
+-- 
+2.51.0.windows.1
+

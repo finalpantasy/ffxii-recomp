@@ -1,0 +1,163 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: finalpantasy <finalpantasy@users.noreply.github.com>
+Date: Thu, 26 Nov 2026 11:49:27 -0500
+Subject: [PATCH 26/34] win32: optional input hold hook, audio start/stop
+ trace, swap chain and present interval logs
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ platforms/win32/src/win32/dinput8.cpp  |  9 ++++++++-
+ platforms/win32/src/win32/dxgi.cpp     | 16 ++++++++++++++++
+ platforms/win32/src/win32/mmdevapi.cpp |  3 +++
+ platforms/win32/src/win32/xinput.cpp   | 18 ++++++++++++++++++
+ 4 files changed, 45 insertions(+), 1 deletion(-)
+
+diff --git a/platforms/win32/src/win32/dinput8.cpp b/platforms/win32/src/win32/dinput8.cpp
+index fd7960d..cabc38b 100644
+--- a/platforms/win32/src/win32/dinput8.cpp
++++ b/platforms/win32/src/win32/dinput8.cpp
+@@ -25,6 +25,7 @@
+ #include "win32/xinput.h"
+ 
+ namespace recomp::hle {
++extern bool (*g_input_hold)(int kind);  // xinput.cpp
+ namespace {
+ 
+ using guest::GUID;
+@@ -107,6 +108,8 @@ struct InputDevice : com::Object {
+   uint8_t buttons[8] = {};
+   // Keyboard: DIK state.
+   uint8_t keys[256] = {};
++  bool held_valid = false;  // held: the keys the game was last given
++  uint8_t held[256] = {};
+   ~InputDevice() override;
+ };
+ 
+@@ -460,7 +463,11 @@ HLE_NAMED_X("dinput8.dll", "IDirectInputDevice8A::GetDeviceState", DID8_GetDevic
+   if (size != d->data_size) return DIERR_INVALIDPARAM;
+   std::lock_guard<std::mutex> l(g_mu);
+   if (d->keyboard) {
+-    std::memcpy(GPtr(out), d->keys, 256);
++    if (!(d->held_valid && g_input_hold && g_input_hold(1))) {
++      std::memcpy(d->held, d->keys, 256);
++      d->held_valid = true;
++    }
++    std::memcpy(GPtr(out), d->held, 256);
+     return DI_OK;
+   }
+   for (int a = 0; a < 3; a++) Wr32(out + 4 * uint32_t(a), uint32_t(d->axis[a]));
+diff --git a/platforms/win32/src/win32/dxgi.cpp b/platforms/win32/src/win32/dxgi.cpp
+index fbc2846..30eca4f 100644
+--- a/platforms/win32/src/win32/dxgi.cpp
++++ b/platforms/win32/src/win32/dxgi.cpp
+@@ -260,6 +260,12 @@ HLE_NAMED_X(kDll, "IDXGIFactory::CreateSwapChain", DxgiFactoryCreateSwapChain, k
+   IDXGISwapChain* host = nullptr;
+   HRESULT hr = DxvkHost<IDXGIFactory>(Arg(c, 0))->CreateSwapChain(
+       DxvkHost<IUnknown>(Arg(c, 1)), &desc, &host);
++  WarnF("[dxgi] CreateSwapChain %ux%u fmt %u refresh %u/%u msaa %u buffers %u windowed %d "
++        "effect %u flags 0x%X -> 0x%X\n",
++        desc.BufferDesc.Width, desc.BufferDesc.Height, unsigned(desc.BufferDesc.Format),
++        desc.BufferDesc.RefreshRate.Numerator, desc.BufferDesc.RefreshRate.Denominator,
++        desc.SampleDesc.Count, desc.BufferCount, int(desc.Windowed), unsigned(desc.SwapEffect),
++        desc.Flags, unsigned(hr));
+   Wr64(Arg(c, 3), SUCCEEDED(hr) ? WrapDxvkKnown(host, __uuidof(IDXGISwapChain)) : 0);
+   return uint32_t(hr);
+ }
+@@ -753,6 +759,16 @@ HLE_NAMED_X(kDll, "IDXGISwapChain::Present", DxgiSwapPresent, kCdecl, true) {
+   D3d11FlushRecorded();
+   FpsOverlayDraw(swap);
+   if (!dump_blend) DumpFrame(swap);
++  {
++    // Log each change of the game's sync interval and flags (VSync setting,
++    // menus versus field).
++    static uint64_t last = ~0ull;
++    const uint64_t now = (Arg(c, 1) << 32) | uint32_t(Arg(c, 2));
++    if (now != last) {
++      last = now;
++      WarnF("[dxgi] Present interval %u flags 0x%X\n", uint32_t(Arg(c, 1)), uint32_t(Arg(c, 2)));
++    }
++  }
+   return uint32_t(swap->Present(uint32_t(Arg(c, 1)), uint32_t(Arg(c, 2))));
+ }
+ HLE_NAMED_X(kDll, "IDXGISwapChain::GetBuffer", DxgiSwapGetBuffer, kCdecl, true) {
+diff --git a/platforms/win32/src/win32/mmdevapi.cpp b/platforms/win32/src/win32/mmdevapi.cpp
+index ce29bb8..cd007b4 100644
+--- a/platforms/win32/src/win32/mmdevapi.cpp
++++ b/platforms/win32/src/win32/mmdevapi.cpp
+@@ -26,6 +26,7 @@
+ #include <algorithm>
+ #include <chrono>
+ #include <condition_variable>
++#include <cstdlib>
+ #include <cstring>
+ #include <memory>
+ #include <mutex>
+@@ -417,6 +418,7 @@ HLE_NAMED_X(kDll, "IAudioClient::Start", Cl_Start, 1, true) {
+     if (cl->running) return AUDCLNT_E_NOT_STOPPED;
+     cl->running = true;
+   }
++  if (std::getenv("RECOMP_TRACE_AUDIO")) WarnF("[audio] IAudioClient::Start\n");
+   SDL_ResumeAudioStreamDevice(cl->stream);
+   cl->cv.notify_all();
+   return S_OK;
+@@ -431,6 +433,7 @@ HLE_NAMED_X(kDll, "IAudioClient::Stop", Cl_Stop, 1, true) {
+     cl->running = false;
+     if (!was) return S_FALSE;
+   }
++  if (std::getenv("RECOMP_TRACE_AUDIO")) WarnF("[audio] IAudioClient::Stop\n");
+   SDL_PauseAudioStreamDevice(cl->stream);
+   return S_OK;
+ }
+diff --git a/platforms/win32/src/win32/xinput.cpp b/platforms/win32/src/win32/xinput.cpp
+index 1194383..3397778 100644
+--- a/platforms/win32/src/win32/xinput.cpp
++++ b/platforms/win32/src/win32/xinput.cpp
+@@ -22,6 +22,13 @@
+ 
+ 
+ namespace recomp::hle {
++
++// Optional: asked on every input read (kind 0 XInput, 1 DirectInput
++// keyboard); true gives the game the same state as its previous read. A
++// game that updates its logic on only some frames (FFXII at --fps 120) uses
++// it so a new press first shows up on a frame whose logic runs.
++bool (*g_input_hold)(int kind) = nullptr;
++
+ namespace {
+ 
+ constexpr uint32_t ERROR_SUCCESS = 0, ERROR_BAD_ARGUMENTS = 160,
+@@ -31,6 +38,9 @@ struct Pad {
+   SDL_Gamepad* gp = nullptr;
+   uint32_t packet = 0;
+   uint8_t last[12] = {};  // XINPUT_GAMEPAD last reported
++  bool held = false;      // out/out_packet hold what the game was last given
++  uint32_t out_packet = 0;
++  uint8_t out[12] = {};
+ };
+ 
+ std::mutex g_mu;
+@@ -132,6 +142,11 @@ HLE_NAMED("xinput1_3.dll", "#2", XInputGetState, 2) {
+   Pad* p = PadAt(Arg(c, 0));
+   if (!p) return ERROR_DEVICE_NOT_CONNECTED;
+   if (!Arg(c, 1)) return ERROR_BAD_ARGUMENTS;
++  if (p->held && g_input_hold && g_input_hold(0)) {
++    Wr32(Arg(c, 1), p->out_packet);
++    std::memcpy(GPtr(Arg(c, 1) + 4), p->out, sizeof p->out);
++    return ERROR_SUCCESS;
++  }
+   uint8_t g[12];
+   ReadGamepad(p->gp, g);
+   if (std::memcmp(g, p->last, sizeof g) != 0) {
+@@ -140,6 +155,9 @@ HLE_NAMED("xinput1_3.dll", "#2", XInputGetState, 2) {
+   }
+   Wr32(Arg(c, 1), p->packet);
+   std::memcpy(GPtr(Arg(c, 1) + 4), g, sizeof g);
++  p->held = true;
++  p->out_packet = p->packet;
++  std::memcpy(p->out, g, sizeof g);
+   return ERROR_SUCCESS;
+ }
+ 
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,31 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: finalpantasy <finalpantasy@users.noreply.github.com>
+Date: Sun, 22 Nov 2026 03:39:45 -0500
+Subject: [PATCH 09/34] HLE: check the host MXCSR every 16th import call
+
+STMXCSR after every call took CallThunk from 4.1% to 8.6% of the FFXII render thread; every 16th call brings it to 5.7%. The SwARc suite passed (60 of 60) with the per-call version; this change only thins out when that check runs.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/x86/hle.cpp | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/src/x86/hle.cpp b/src/x86/hle.cpp
+index 502687c..1dd579a 100644
+--- a/src/x86/hle.cpp
++++ b/src/x86/hle.cpp
+@@ -222,7 +222,10 @@ void CallThunk(Ctx& c, gaddr thunk) {
+   }
+ #if defined(__x86_64__)
+   // Lazy SSE relies on the host MXCSR staying at the default (sse_quiet.h).
+-  if (sse::g_lazy_flags) sse::EnsureHostMxcsr();
++  // STMXCSR is slow enough to show in profiles, so check every 16th call;
++  // host libraries that change it normally put it back themselves.
++  static thread_local uint32_t mx_calls = 0;
++  if (sse::g_lazy_flags && (mx_calls++ & 15) == 0) sse::EnsureHostMxcsr();
+ #endif
+   if (trace) TraceF("[%04X]   -> %llX\n", CurrentThread()->tid, (unsigned long long)r);
+   if (x64) {
+-- 
+2.51.0.windows.1
+

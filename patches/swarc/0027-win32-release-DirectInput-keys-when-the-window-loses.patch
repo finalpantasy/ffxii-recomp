@@ -1,0 +1,86 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: finalpantasy <finalpantasy@users.noreply.github.com>
+Date: Thu, 26 Nov 2026 12:28:38 -0500
+Subject: [PATCH 27/34] win32: release DirectInput keys when the window loses
+ focus
+
+Key releases after alt-tab or a screenshot shortcut go to another window,
+so keys stayed down in the game's DirectInput keyboard until pressed again.
+user32_window now calls a hook that dinput8 sets, which clears held keys
+and queues key-up events.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ platforms/win32/src/win32/dinput8.cpp       | 22 +++++++++++++++++++++
+ platforms/win32/src/win32/user32_window.cpp |  8 ++++++++
+ 2 files changed, 30 insertions(+)
+
+diff --git a/platforms/win32/src/win32/dinput8.cpp b/platforms/win32/src/win32/dinput8.cpp
+index cabc38b..5931b1f 100644
+--- a/platforms/win32/src/win32/dinput8.cpp
++++ b/platforms/win32/src/win32/dinput8.cpp
+@@ -126,6 +126,28 @@ void Record(InputDevice& d, uint32_t ofs, uint32_t data, uint32_t time) {
+   d.buffer.push_back({ofs, data, time, ++g_sequence, 0});
+ }
+ 
++}  // namespace
++
++// Focus left the game: its key releases go to another window, so release
++// every held key now (with buffered key-up events), as DirectInput does when a
++// foreground device loses the keyboard. Otherwise a key held during alt-tab
++// or a screenshot shortcut stays down until pressed again.
++void DinputReleaseKeys() {
++  std::lock_guard<std::mutex> l(g_mu);
++  for (InputDevice* d : g_acquired) {
++    if (!d->keyboard) continue;
++    for (uint32_t k = 0; k < 256; k++) {
++      if (!d->keys[k]) continue;
++      d->keys[k] = 0;
++      Record(*d, k, 0, 0);
++    }
++  }
++}
++extern void (*g_release_keys_hook)();  // user32_window.cpp
++
++namespace {
++const bool kReleaseKeysHook = (g_release_keys_hook = &DinputReleaseKeys, true);
++
+ void OnRawInput(const RawInput& in) {
+   std::lock_guard<std::mutex> l(g_mu);
+   for (InputDevice* d : g_acquired) {
+diff --git a/platforms/win32/src/win32/user32_window.cpp b/platforms/win32/src/win32/user32_window.cpp
+index dec2acd..2e31bb3 100644
+--- a/platforms/win32/src/win32/user32_window.cpp
++++ b/platforms/win32/src/win32/user32_window.cpp
+@@ -40,6 +40,12 @@ namespace recomp {
+ // pointer, which automated (background) runs otherwise ignore.
+ constexpr SDL_MouseID kTestPointer = 0xD51D51;
+ 
++namespace hle {
++// Set by dinput8.cpp when linked: releases DirectInput's held keys when the
++// window loses focus.
++void (*g_release_keys_hook)() = nullptr;
++}
++
+ namespace {
+ 
+ 
+@@ -473,6 +479,7 @@ void HandleSdlEvent(const SDL_Event& e) {
+       if (uint32_t h = HwndForSdl(e.window.windowID)) {
+         // Release keys so nothing stays stuck while we're away.
+         for (int vk = 0; vk < 256; vk++) g_key_down[vk] = 0;
++        if (hle::g_release_keys_hook) hle::g_release_keys_hook();
+         ActivateApp(h, false);
+       }
+       break;
+@@ -890,6 +897,7 @@ void InjectTestFocus() {
+   WarnF("TEST_FOCUS: focus %s at %.1f s\n", stage == 0 ? "lost" : "gained", t);
+   if (stage == 0) {
+     for (int vk = 0; vk < 256; vk++) g_key_down[vk] = 0;
++    if (hle::g_release_keys_hook) hle::g_release_keys_hook();
+     ActivateApp(hwnd, false);
+   } else {
+     ActivateApp(hwnd, true);
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,130 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: finalpantasy <finalpantasy@users.noreply.github.com>
+Date: Thu, 26 Nov 2026 16:39:23 -0500
+Subject: [PATCH 28/34] dxgi: add present interval callback and pacing stats
+
+---
+ platforms/win32/src/win32/dxgi.cpp | 47 +++++++++++++++++++++++++++---
+ 1 file changed, 43 insertions(+), 4 deletions(-)
+
+diff --git a/platforms/win32/src/win32/dxgi.cpp b/platforms/win32/src/win32/dxgi.cpp
+index 30eca4f..29c801c 100644
+--- a/platforms/win32/src/win32/dxgi.cpp
++++ b/platforms/win32/src/win32/dxgi.cpp
+@@ -7,6 +7,7 @@
+ #include <cstdlib>
+ #include <cstring>
+ #include <memory>
++#include <numeric>
+ #include <vector>
+ 
+ #include <d3d11.h>
+@@ -511,6 +512,7 @@ void DumpFrame(IDXGISwapChain* swap) {
+ // speed. Digits are rectangles drawn with ClearView, so no pipeline state
+ // changes.
+ double (*g_fps_overlay_extra)() = nullptr;
++uint32_t (*g_dxgi_present_interval)(uint32_t interval) = nullptr;
+ namespace {
+ struct FpsOverlay {
+   std::vector<int64_t> stamps;  // present times in ns, last ~1 s
+@@ -611,6 +613,34 @@ void FpsOverlayDraw(IDXGISwapChain* swap) {
+ }  // namespace
+ 
+ namespace {
++// <ID>_D3D_PACE_STATS=1: report the distribution of actual host presents.
++void PaceStatsRecord() {
++  static const bool on = [] {
++    const char* v = Env("D3D_PACE_STATS");
++    return v && *v && *v != '0';
++  }();
++  if (!on) return;
++  static int64_t last = 0;
++  static uint64_t total = 0;
++  static std::vector<double> samples;
++  const int64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(
++                          std::chrono::steady_clock::now().time_since_epoch()).count();
++  ++total;
++  if (last) samples.push_back(double(now - last) / 1e6);
++  last = now;
++  if (samples.size() < 2048) return;
++  std::vector<double> sorted = samples;
++  std::sort(sorted.begin(), sorted.end());
++  const double sum = std::accumulate(sorted.begin(), sorted.end(), 0.0);
++  auto percentile = [&](double p) { return sorted[size_t((sorted.size() - 1) * p)]; };
++  std::fprintf(stderr,
++               "[dxgi] present stats: %llu presents, mean %.3f ms (%.2f fps), p50 %.3f p95 %.3f "
++               "p99 %.3f max %.3f ms\n",
++               (unsigned long long)total, sum / sorted.size(), 1000.0 * sorted.size() / sum,
++               percentile(0.50), percentile(0.95), percentile(0.99), sorted.back());
++  samples.clear();
++}
++
+ // Interpolated frames are paced by a presenter thread: it shows the blended
+ // frame when the game presents, then the real frame half a frame interval
+ // later, so the two are evenly spaced. FFXII_D3D_PACE=0 presents both at once.
+@@ -661,6 +691,7 @@ void PresenterLoop() {
+         FpsOverlayDraw(swap);
+         if (dump_blend) DumpFrame(swap);
+         swap->Present(0, flags);
++        PaceStatsRecord();
+       }
+     }
+     g_pres.t_blend += (std::chrono::steady_clock::now() - t0).count();
+@@ -675,6 +706,7 @@ void PresenterLoop() {
+       FpsOverlayDraw(swap);
+       if (!dump_blend) DumpFrame(swap);
+       swap->Present(interval, flags);
++    PaceStatsRecord();
+     }
+     g_pres.t_main += (std::chrono::steady_clock::now() - t1).count();
+     swap->Release();
+@@ -709,6 +741,9 @@ bool PacingOn() {
+ 
+ HLE_NAMED_X(kDll, "IDXGISwapChain::Present", DxgiSwapPresent, kCdecl, true) {
+   IDXGISwapChain* swap = DxvkHost<IDXGISwapChain>(Arg(c, 0));
++  const uint32_t requested_interval = uint32_t(Arg(c, 1));
++  const uint32_t interval = g_dxgi_present_interval ? g_dxgi_present_interval(requested_interval)
++                                                    : requested_interval;
+   static const bool dump_blend = Env("DUMP_BLENDED") != nullptr;
+   if (PacingOn()) {
+     static std::thread thread = [] {
+@@ -745,7 +780,7 @@ HLE_NAMED_X(kDll, "IDXGISwapChain::Present", DxgiSwapPresent, kCdecl, true) {
+     g_pres.blend = blend;
+     g_pres.main = main;
+     g_pres.show_blend = show;
+-    g_pres.interval = uint32_t(Arg(c, 1));
++    g_pres.interval = interval;
+     g_pres.flags = uint32_t(Arg(c, 2));
+     g_pres.queued = true;
+     g_pres.cv.notify_all();
+@@ -755,6 +790,7 @@ HLE_NAMED_X(kDll, "IDXGISwapChain::Present", DxgiSwapPresent, kCdecl, true) {
+     if (dump_blend) DumpFrame(swap);
+     FpsOverlayDraw(swap);
+     swap->Present(0, uint32_t(Arg(c, 2)));
++    PaceStatsRecord();
+   }
+   D3d11FlushRecorded();
+   FpsOverlayDraw(swap);
+@@ -763,13 +799,16 @@ HLE_NAMED_X(kDll, "IDXGISwapChain::Present", DxgiSwapPresent, kCdecl, true) {
+     // Log each change of the game's sync interval and flags (VSync setting,
+     // menus versus field).
+     static uint64_t last = ~0ull;
+-    const uint64_t now = (Arg(c, 1) << 32) | uint32_t(Arg(c, 2));
++    const uint64_t now = (uint64_t(interval) << 32) | uint32_t(Arg(c, 2));
+     if (now != last) {
+       last = now;
+-      WarnF("[dxgi] Present interval %u flags 0x%X\n", uint32_t(Arg(c, 1)), uint32_t(Arg(c, 2)));
++      WarnF("[dxgi] Present interval %u (requested %u) flags 0x%X caller 0x%llX\n", interval,
++            requested_interval, uint32_t(Arg(c, 2)), (unsigned long long)Rd64(c.rsp));
+     }
+   }
+-  return uint32_t(swap->Present(uint32_t(Arg(c, 1)), uint32_t(Arg(c, 2))));
++  const HRESULT hr = swap->Present(interval, uint32_t(Arg(c, 2)));
++  PaceStatsRecord();
++  return uint32_t(hr);
+ }
+ HLE_NAMED_X(kDll, "IDXGISwapChain::GetBuffer", DxgiSwapGetBuffer, kCdecl, true) {
+   if (!Arg(c, 3)) return kEInvalidArg;
+-- 
+2.51.0.windows.1
+

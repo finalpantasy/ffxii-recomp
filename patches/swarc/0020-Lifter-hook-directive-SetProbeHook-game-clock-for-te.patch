@@ -1,0 +1,153 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: finalpantasy <finalpantasy@users.noreply.github.com>
+Date: Sun, 22 Nov 2026 15:56:54 -0500
+Subject: [PATCH 20/34] Lifter hook directive, SetProbeHook, game clock for
+ test scripts
+
+- Manifest `hook <VA> <name>`: a probe call before the instruction that
+  does not make VA an entry, so the function stays whole.
+- x86/probe_hook.h: SetProbeHook lets a game handle probes (adjust
+  registers or memory at one instruction). Kept out of lifted.h so that
+  adding it does not rebuild every generated file.
+- input_state.h SetTestClock: TEST_INPUT scripts can follow a game clock
+  instead of wall time.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ platforms/win32/src/win32/input_state.h     |  8 ++++++++
+ platforms/win32/src/win32/user32_window.cpp | 13 ++++++++++---
+ src/x86/dispatch.cpp                        |  8 ++++++++
+ src/x86/probe_hook.h                        | 15 +++++++++++++++
+ tools/lifter_x86/program.cpp                |  6 ++++++
+ 5 files changed, 47 insertions(+), 3 deletions(-)
+ create mode 100644 src/x86/probe_hook.h
+
+diff --git a/platforms/win32/src/win32/input_state.h b/platforms/win32/src/win32/input_state.h
+index 63d7d6a..f047fe3 100644
+--- a/platforms/win32/src/win32/input_state.h
++++ b/platforms/win32/src/win32/input_state.h
+@@ -74,4 +74,12 @@ bool GetTestPad(TestPadState* out);
+ using TestCondition = bool (*)(const char* arg, double waited, float* lx, float* ly, uint16_t* buttons);
+ void RegisterTestCondition(const char* name, TestCondition fn);
+ 
++// The clock of <ID>_TEST_INPUT scripts, in seconds. By default it is wall
++// time. A game can set its own (game time, which also stands still while
++// the game is slow or loading), so a script reaches the same game moments
++// at any frame rate or machine load. Set it before the first event pump;
++// script time 0 is the clock's value at that pump.
++using TestClock = double (*)();
++void SetTestClock(TestClock fn);
++
+ }  // namespace recomp
+diff --git a/platforms/win32/src/win32/user32_window.cpp b/platforms/win32/src/win32/user32_window.cpp
+index 71a1c76..43d14c8 100644
+--- a/platforms/win32/src/win32/user32_window.cpp
++++ b/platforms/win32/src/win32/user32_window.cpp
+@@ -939,6 +939,13 @@ struct TestWait {
+ 
+ void RegisterTestCondition(const char* name, TestCondition fn) { TestConditions()[name] = fn; }
+ 
++namespace {
++TestClock g_test_clock = nullptr;
++// Milliseconds on the test-script clock: the game's clock when one is set.
++Uint64 TestClockMs() { return g_test_clock ? Uint64(g_test_clock() * 1000.0) : SDL_GetTicks(); }
++}  // namespace
++void SetTestClock(TestClock fn) { g_test_clock = fn; }
++
+ namespace {
+ 
+ void InjectTestInput() {
+@@ -949,14 +956,14 @@ void InjectTestInput() {
+   static std::vector<TestWait> waits;
+   static size_t wnext = 0;
+   static double held = 0;        // seconds the script clock has stood still
+-  static double wait_since = -1;  // real time the current wait began
++  static double wait_since = -1;  // clock time the current wait began
+   static bool steering = false;   // a condition drives the left stick
+   static TestPadState pad;
+   static Uint64 t0 = 0;
+   static bool loaded = false;
+   if (!loaded) {
+     loaded = true;
+-    t0 = SDL_GetTicks();
++    t0 = TestClockMs();
+     const char* path = Env("TEST_INPUT");
+     if (!path) return;
+     FILE* f = std::fopen(path, "r");
+@@ -1091,7 +1098,7 @@ void InjectTestInput() {
+     // The pad is plugged in from the start (a wait may steer it).
+     if (!pq.empty() || !waits.empty()) SetTestPad(pad);
+   }
+-  const double now = (SDL_GetTicks() - t0) / 1000.0;
++  const double now = (TestClockMs() - t0) / 1000.0;
+   double t = now - held;
+   // A pending wait holds the script clock at its time until it is met.
+   while (wnext < waits.size() && t >= waits[wnext].t) {
+diff --git a/src/x86/dispatch.cpp b/src/x86/dispatch.cpp
+index 0cdeb46..f772232 100644
+--- a/src/x86/dispatch.cpp
++++ b/src/x86/dispatch.cpp
+@@ -34,6 +34,7 @@
+ #include "runtime/write_watch.h"
+ #include "x86/hle.h"
+ #include "x86/lifted.h"
++#include "x86/probe_hook.h"
+ #include "x86/runtime.h"
+ 
+ namespace recomp {
+@@ -723,7 +724,14 @@ uint64_t Rdtsc(Ctx& c) {
+           .count());
+ }
+ 
++namespace {
++ProbeHook g_probe_hook = nullptr;
++}  // namespace
++
++void SetProbeHook(ProbeHook hook) { g_probe_hook = hook; }
++
+ void Probe(Ctx& c, uint64_t va, const char* name) {
++  if (g_probe_hook && g_probe_hook(c, va, name)) return;
+   std::fprintf(stderr,
+                "probe: %s (%08llX) rax %08llX rcx %08llX rdx %08llX rbx %08llX "
+                "rsp %08llX rbp %08llX eflags %08X\n",
+diff --git a/src/x86/probe_hook.h b/src/x86/probe_hook.h
+new file mode 100644
+index 0000000..5757423
+--- /dev/null
++++ b/src/x86/probe_hook.h
+@@ -0,0 +1,15 @@
++#pragma once
++// Game hook for manifest probes (`probe <VA> [name]` lines). A probe runs
++// before the instruction at VA, with registers spilled to Ctx and reloaded
++// afterwards, so the hook can log or correct register and memory state at
++// that one instruction. It returns true when it handled the probe, false
++// for the default log line. Kept out of lifted.h so that adding it does not
++// rebuild every generated file.
++
++#include <cstdint>
++
++namespace recomp {
++struct Ctx;
++using ProbeHook = bool (*)(Ctx& c, uint64_t va, const char* name);
++void SetProbeHook(ProbeHook hook);
++}  // namespace recomp
+diff --git a/tools/lifter_x86/program.cpp b/tools/lifter_x86/program.cpp
+index 770c6df..c76546a 100644
+--- a/tools/lifter_x86/program.cpp
++++ b/tools/lifter_x86/program.cpp
+@@ -193,6 +193,12 @@ bool Program::LoadManifest(const std::string& path, std::string* err) {
+     } else if (kind == "probe") {
+       entries.insert(va);
+       probes[va] = name.empty() ? "probe" : name;
++    } else if (kind == "hook") {
++      // hook <VA> <name>: the same call as a probe (::recomp::Probe before
++      // the instruction, for a game's SetProbeHook), without making VA an
++      // entry, so the function stays whole and the call costs only a
++      // register spill and reload where it sits.
++      probes[va] = name.empty() ? "hook" : name;
+     } else if (kind == "replace") {
+       entries.insert(va);
+       replaced.insert(va);
+-- 
+2.51.0.windows.1
+

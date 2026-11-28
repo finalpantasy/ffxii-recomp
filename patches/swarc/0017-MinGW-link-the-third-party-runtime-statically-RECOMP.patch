@@ -1,0 +1,102 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: finalpantasy <finalpantasy@users.noreply.github.com>
+Date: Sun, 22 Nov 2026 12:12:53 -0500
+Subject: [PATCH 17/34] MinGW: link the third-party runtime statically
+ (RECOMP_STATIC_RUNTIME)
+
+Programs linked through recomp_whole_archive get -static, and the
+imported SDL3, glslang and SPIRV-Tools targets point at their static
+archives without the DLL-import define. The FFXII exe now imports only
+system DLLs (d3d11, dxgi, kernel32 and the like) and runs from a folder
+with no MSYS2 directory on PATH. On by default for MinGW.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ CMakeLists.txt   | 13 +++++++++++++
+ cmake/host.cmake | 32 ++++++++++++++++++++++++++++++++
+ 2 files changed, 45 insertions(+)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 099a54d..de9ec8b 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -36,6 +36,16 @@ if(WIN32)
+     _add_library(${name} ${_args})
+   endfunction()
+ endif()
++# RECOMP_STATIC_RUNTIME (MinGW): programs link the GCC runtime, libstdc++,
++# winpthreads, SDL3, glslang and SPIRV-Tools statically, so a release is
++# one exe that needs only system DLLs. cmake/host.cmake points the
++# imported SDL3 and glslang targets at their static archives.
++if(MINGW)
++  option(RECOMP_STATIC_RUNTIME "Link third-party runtime libraries statically" ON)
++  if(RECOMP_STATIC_RUNTIME)
++    string(APPEND CMAKE_EXE_LINKER_FLAGS " -static")
++  endif()
++endif()
+ # recomp_whole_archive(<target>): on Windows, links every runtime library
+ # into <target> whole, so no self-registering object is dropped.
+ function(recomp_whole_archive target)
+@@ -44,6 +54,9 @@ function(recomp_whole_archive target)
+     string(REPLACE ";" "," _list "${_libs}")
+     set_property(TARGET ${target} PROPERTY LINK_LIBRARY_OVERRIDE "WHOLE_ARCHIVE,${_list}")
+   endif()
++  if(RECOMP_STATIC_RUNTIME)
++    target_link_options(${target} PRIVATE -static)
++  endif()
+ endfunction()
+ 
+ # For the helper functions below, which run in the game project's scope.
+diff --git a/cmake/host.cmake b/cmake/host.cmake
+index e30b55d..6e2a984 100644
+--- a/cmake/host.cmake
++++ b/cmake/host.cmake
+@@ -4,6 +4,34 @@
+ include(FetchContent)
+ 
+ find_package(SDL3 3.4 REQUIRED CONFIG)  # SDL_GPUVulkanOptions
++# recomp_use_static_archive(<imported targets>): links each through the
++# lib<name>.a beside its import library, without the DLL-import define.
++function(recomp_use_static_archive)
++  foreach(_t ${ARGN})
++    if(NOT TARGET ${_t})
++      continue()
++    endif()
++    get_target_property(_cfgs ${_t} IMPORTED_CONFIGURATIONS)
++    foreach(_c ${_cfgs})
++      get_target_property(_imp ${_t} IMPORTED_IMPLIB_${_c})
++      string(REGEX REPLACE "\\.dll\\.a$" ".a" _a "${_imp}")
++      if(NOT _a STREQUAL _imp AND EXISTS "${_a}")
++        set_target_properties(${_t} PROPERTIES IMPORTED_IMPLIB_${_c} "${_a}"
++                                               IMPORTED_LOCATION_${_c} "${_a}")
++      else()
++        message(FATAL_ERROR "RECOMP_STATIC_RUNTIME: no static archive for ${_t} (${_imp})")
++      endif()
++    endforeach()
++    set_property(TARGET ${_t} PROPERTY INTERFACE_COMPILE_DEFINITIONS "")
++  endforeach()
++endfunction()
++# SDL3::SDL3 is an ALIAS of SDL3::SDL3-shared; that target takes libSDL3.a
++# and the system libraries the static package lists.
++if(RECOMP_STATIC_RUNTIME AND TARGET SDL3::SDL3-static)
++  recomp_use_static_archive(SDL3::SDL3-shared)
++  get_target_property(_sdl_libs SDL3::SDL3-static INTERFACE_LINK_LIBRARIES)
++  set_property(TARGET SDL3::SDL3-shared APPEND PROPERTY INTERFACE_LINK_LIBRARIES ${_sdl_libs})
++endif()
+ find_package(Threads REQUIRED)
+ find_package(PkgConfig REQUIRED)
+ # ffmpeg (LGPL, linked dynamically): MP3 for Miles streams, Bink and
+@@ -59,6 +87,10 @@ target_compile_features(recomp_gfx PUBLIC cxx_std_20)
+ # Shaders translated at run time (Direct3D 9) are compiled then: glslang
+ # to SPIR-V, and SPIRV-Cross to MSL on macOS (gfx/shader_compile.cpp).
+ find_package(glslang CONFIG REQUIRED)
++if(RECOMP_STATIC_RUNTIME)
++  recomp_use_static_archive(glslang::glslang glslang::SPIRV
++    glslang::glslang-default-resource-limits SPIRV-Tools-opt SPIRV-Tools)
++endif()
+ target_link_libraries(recomp_gfx PUBLIC SDL3::SDL3 recomp_hlsl
+   PRIVATE recomp_log glslang::glslang glslang::SPIRV glslang::glslang-default-resource-limits)
+ if(APPLE)
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,150 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: finalpantasy <finalpantasy@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 19:09:33 -0500
+Subject: [PATCH 03/34] Run SSE arithmetic natively on x86-64 hosts
+
+Add/sub/mul/div, sqrt and min/max execute as the real instruction with
+the guest's MXCSR loaded (when every exception is masked), instead of
+the SoftFloat model: same results and flags, several times cheaper.
+RECOMP_SOFT_SSE=1 keeps the SoftFloat path for A/B checks.
+lift_sse64 passes both ways (6,589 forms, 0 failed).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/x86/sse.cpp | 96 +++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 96 insertions(+)
+
+diff --git a/src/x86/sse.cpp b/src/x86/sse.cpp
+index 24e3cbe..0beb347 100644
+--- a/src/x86/sse.cpp
++++ b/src/x86/sse.cpp
+@@ -16,9 +16,50 @@ extern "C" {
+ 
+ #include "runtime/log.h"
+ 
++#include <cstdlib>
++#include <cstring>
++
+ namespace recomp::sse {
+ namespace {
+ 
++#if defined(__x86_64__)
++// x86-64 hosts run the arithmetic natively with the guest's MXCSR loaded:
++// the hardware is what the SoftFloat model below reproduces, so results
++// and flags are the same and several times cheaper. Only with every
++// exception masked (an unmasked one is not modelled either way).
++// RECOMP_SOFT_SSE=1 keeps the SoftFloat path for A/B checks.
++const bool kNative = [] {
++  const char* e = std::getenv("RECOMP_SOFT_SSE");
++  return !(e && *e && *e != '0');
++}();
++
++typedef float V4 __attribute__((vector_size(16)));
++
++struct Native {
++  Ctx& c;
++  V4 d, s;
++  uint32_t g, h;
++  Native(Ctx& cc, const Xmm& dd, const Xmm& ss) : c(cc), g(cc.mxcsr) {
++    std::memcpy(&d, dd.b, 16);
++    std::memcpy(&s, ss.b, 16);
++    asm volatile("stmxcsr %0" : "=m"(h));
++  }
++  void Done(Xmm& out) {
++    c.mxcsr = g;
++    std::memcpy(out.b, &d, 16);
++  }
++};
++
++bool NativeOk(const Ctx& c) { return kNative && (c.mxcsr & 0x1F80) == 0x1F80; }
++
++// One instruction between the guest's MXCSR and the host's again.
++#define RECOMP_SSE_NATIVE(n, insn)                                        \
++  asm volatile("ldmxcsr %[g]\n\t" insn " %[s], %[d]\n\t"                  \
++               "stmxcsr %[g]\n\tldmxcsr %[h]"                             \
++               : [d] "+x"(n.d), [g] "+m"(n.g)                             \
++               : [s] "x"(n.s), [h] "m"(n.h))
++#endif
++
+ // MXCSR fields.
+ constexpr uint32_t kIE = 0x01, kDE = 0x02, kZE = 0x04, kOE = 0x08, kUE = 0x10,
+                    kPE = 0x20, kDAZ = 0x40, kFTZ = 0x8000;
+@@ -457,6 +498,31 @@ void CheckAligned(Ctx& c, uint64_t a, uint64_t va, unsigned align) {
+ 
+ void Arith(Ctx& c, Op op, bool dbl, int lanes, Xmm& d, const Xmm& s,
+            uint64_t va) {
++#if defined(__x86_64__)
++  if (NativeOk(c) && (lanes == 1 || lanes == (dbl ? 2 : 4))) {
++    Native n(c, d, s);
++    switch (op << 2 | int(dbl) << 1 | int(lanes == 1)) {
++      case kAdd << 2 | 0: RECOMP_SSE_NATIVE(n, "addps"); break;
++      case kAdd << 2 | 1: RECOMP_SSE_NATIVE(n, "addss"); break;
++      case kAdd << 2 | 2: RECOMP_SSE_NATIVE(n, "addpd"); break;
++      case kAdd << 2 | 3: RECOMP_SSE_NATIVE(n, "addsd"); break;
++      case kSub << 2 | 0: RECOMP_SSE_NATIVE(n, "subps"); break;
++      case kSub << 2 | 1: RECOMP_SSE_NATIVE(n, "subss"); break;
++      case kSub << 2 | 2: RECOMP_SSE_NATIVE(n, "subpd"); break;
++      case kSub << 2 | 3: RECOMP_SSE_NATIVE(n, "subsd"); break;
++      case kMul << 2 | 0: RECOMP_SSE_NATIVE(n, "mulps"); break;
++      case kMul << 2 | 1: RECOMP_SSE_NATIVE(n, "mulss"); break;
++      case kMul << 2 | 2: RECOMP_SSE_NATIVE(n, "mulpd"); break;
++      case kMul << 2 | 3: RECOMP_SSE_NATIVE(n, "mulsd"); break;
++      case kDiv << 2 | 0: RECOMP_SSE_NATIVE(n, "divps"); break;
++      case kDiv << 2 | 1: RECOMP_SSE_NATIVE(n, "divss"); break;
++      case kDiv << 2 | 2: RECOMP_SSE_NATIVE(n, "divpd"); break;
++      default: RECOMP_SSE_NATIVE(n, "divsd"); break;
++    }
++    n.Done(d);
++    return;
++  }
++#endif
+   if (dbl)
+     ArithT<true>(c, op, lanes, d, s, va);
+   else
+@@ -477,6 +543,19 @@ int Comi(Ctx& c, bool dbl, bool ordered, const Xmm& a, const Xmm& b,
+ }
+ 
+ void Sqrt(Ctx& c, bool dbl, int lanes, Xmm& d, const Xmm& s, uint64_t va) {
++#if defined(__x86_64__)
++  if (NativeOk(c) && (lanes == 1 || lanes == (dbl ? 2 : 4))) {
++    Native n(c, d, s);
++    switch (int(dbl) << 1 | int(lanes == 1)) {
++      case 0: RECOMP_SSE_NATIVE(n, "sqrtps"); break;
++      case 1: RECOMP_SSE_NATIVE(n, "sqrtss"); break;
++      case 2: RECOMP_SSE_NATIVE(n, "sqrtpd"); break;
++      default: RECOMP_SSE_NATIVE(n, "sqrtsd"); break;
++    }
++    n.Done(d);
++    return;
++  }
++#endif
+   if (dbl)
+     SqrtT<true>(c, lanes, d, s, va);
+   else
+@@ -554,6 +633,23 @@ uint64_t CvtToI64(Ctx& c, bool dbl, const Xmm& s, bool truncate, uint64_t va) {
+ 
+ void MinMax(Ctx& c, bool max, bool dbl, int lanes, Xmm& d, const Xmm& s,
+             uint64_t va) {
++#if defined(__x86_64__)
++  if (NativeOk(c) && (lanes == 1 || lanes == (dbl ? 2 : 4))) {
++    Native n(c, d, s);
++    switch (int(max) << 2 | int(dbl) << 1 | int(lanes == 1)) {
++      case 0: RECOMP_SSE_NATIVE(n, "minps"); break;
++      case 1: RECOMP_SSE_NATIVE(n, "minss"); break;
++      case 2: RECOMP_SSE_NATIVE(n, "minpd"); break;
++      case 3: RECOMP_SSE_NATIVE(n, "minsd"); break;
++      case 4: RECOMP_SSE_NATIVE(n, "maxps"); break;
++      case 5: RECOMP_SSE_NATIVE(n, "maxss"); break;
++      case 6: RECOMP_SSE_NATIVE(n, "maxpd"); break;
++      default: RECOMP_SSE_NATIVE(n, "maxsd"); break;
++    }
++    n.Done(d);
++    return;
++  }
++#endif
+   if (dbl)
+     MinMaxT<true>(c, max, lanes, d, s, va);
+   else
+-- 
+2.51.0.windows.1
+

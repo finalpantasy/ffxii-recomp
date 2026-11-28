@@ -1,0 +1,529 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: finalpantasy <finalpantasy@users.noreply.github.com>
+Date: Thu, 26 Nov 2026 20:49:01 -0500
+Subject: [PATCH 29/34] Lifter: keep XMM registers in function locals
+
+Emitter::CacheXmm rewrites c.xmm[N] to locals X0-X15, loaded after
+LIFT_ENTER, stored back after every LIFT_SPILL and reloaded after every
+LIFT_RELOAD, so guest stores through B no longer force XMM reloads from
+Ctx. SWARC_NO_XMM_LOCALS=1 at lift time turns it off. VZEROALL clears all
+16 slots and fxsave/fxrstor spill and reload around the helper.
+
+Out-of-line SSE helpers are renamed ...Ool behind always_inline wrappers
+that pass copies, so the locals do not escape; Comi gets an inline
+lazy-flags path. Suite 59/59 in WSL; FFXII int64 and sse64 oracles 0
+failed, native and SoftFloat.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/x86/sse.cpp           |  34 +++++-----
+ src/x86/sse.h             | 127 +++++++++++++++++++++++++++++++++-----
+ src/x86/sse_quiet.h       |  15 ++++-
+ tools/lifter_x86/emit.cpp |  63 ++++++++++++++++++-
+ tools/lifter_x86/emit.h   |   1 +
+ 5 files changed, 200 insertions(+), 40 deletions(-)
+
+diff --git a/src/x86/sse.cpp b/src/x86/sse.cpp
+index 34fc7a0..0accab8 100644
+--- a/src/x86/sse.cpp
++++ b/src/x86/sse.cpp
+@@ -439,28 +439,28 @@ void DpT(Ctx& c, Xmm& d, const Xmm& s, uint8_t imm, uint64_t va) {
+ 
+ }  // namespace
+ 
+-void HorizOp(Ctx& c, bool dbl, bool sub, Xmm& d, const Xmm& s, uint64_t va) {
++void HorizOpOol(Ctx& c, bool dbl, bool sub, Xmm& d, const Xmm& s, uint64_t va) {
+   if (dbl)
+     HorizOpT<true>(c, sub, d, s, va);
+   else
+     HorizOpT<false>(c, sub, d, s, va);
+ }
+ 
+-void AddSub(Ctx& c, bool dbl, Xmm& d, const Xmm& s, uint64_t va) {
++void AddSubOol(Ctx& c, bool dbl, Xmm& d, const Xmm& s, uint64_t va) {
+   if (dbl)
+     AddSubT<true>(c, d, s, va);
+   else
+     AddSubT<false>(c, d, s, va);
+ }
+ 
+-void Round(Ctx& c, bool dbl, int lanes, Xmm& d, const Xmm& s, uint8_t imm, uint64_t va) {
++void RoundOol(Ctx& c, bool dbl, int lanes, Xmm& d, const Xmm& s, uint8_t imm, uint64_t va) {
+   if (dbl)
+     RoundT<true>(c, lanes, d, s, imm, va);
+   else
+     RoundT<false>(c, lanes, d, s, imm, va);
+ }
+ 
+-void Dp(Ctx& c, bool dbl, Xmm& d, const Xmm& s, uint8_t imm, uint64_t va) {
++void DpOol(Ctx& c, bool dbl, Xmm& d, const Xmm& s, uint8_t imm, uint64_t va) {
+   if (dbl)
+     DpT<true>(c, d, s, imm, va);
+   else
+@@ -483,7 +483,7 @@ uint32_t RcpLane(uint32_t x) {
+   return r;
+ }
+ 
+-void Rcp(Xmm& d, const Xmm& s) {
++void RcpOol(Xmm& d, const Xmm& s) {
+   Xmm r;
+   for (int i = 0; i < 4; i++) SetLane<uint32_t>(r, i, RcpLane(Lane<uint32_t>(s, i)));
+   d = r;
+@@ -536,7 +536,7 @@ void ArithSlow(Ctx& c, Op op, bool dbl, int lanes, Xmm& d, const Xmm& s,
+     ArithT<false>(c, op, lanes, d, s, va);
+ }
+ 
+-void Cmp(Ctx& c, bool dbl, int lanes, Xmm& d, const Xmm& s, uint8_t pred,
++void CmpOol(Ctx& c, bool dbl, int lanes, Xmm& d, const Xmm& s, uint8_t pred,
+          uint64_t va) {
+   if (dbl)
+     CmpT<true>(c, lanes, d, s, pred, va);
+@@ -544,7 +544,7 @@ void Cmp(Ctx& c, bool dbl, int lanes, Xmm& d, const Xmm& s, uint8_t pred,
+     CmpT<false>(c, lanes, d, s, pred, va);
+ }
+ 
+-int Comi(Ctx& c, bool dbl, bool ordered, const Xmm& a, const Xmm& b,
++int ComiOol(Ctx& c, bool dbl, bool ordered, const Xmm& a, const Xmm& b,
+          uint64_t va) {
+   return dbl ? ComiT<true>(c, ordered, a, b, va) : ComiT<false>(c, ordered, a, b, va);
+ }
+@@ -608,15 +608,15 @@ uint32_t RsqrtLane(uint32_t x) {
+   }
+ }
+ 
+-void Rsqrt(Xmm& d, const Xmm& s) {
++void RsqrtOol(Xmm& d, const Xmm& s) {
+   Xmm r;
+   for (int i = 0; i < 4; i++) SetLane<uint32_t>(r, i, RsqrtLane(Lane<uint32_t>(s, i)));
+   d = r;
+ }
+ 
+-void Cvtsi2sd(Xmm& d, int32_t v) { SetLane<uint64_t>(d, 0, i32_to_f64(v).v); }
++void Cvtsi2sdOol(Xmm& d, int32_t v) { SetLane<uint64_t>(d, 0, i32_to_f64(v).v); }
+ 
+-uint32_t CvtToI32(Ctx& c, bool dbl, const Xmm& s, bool truncate, uint64_t va) {
++uint32_t CvtToI32Ool(Ctx& c, bool dbl, const Xmm& s, bool truncate, uint64_t va) {
+   Scope sc(c, va);
+   uint8_t mode = truncate ? uint8_t(softfloat_round_minMag) : RoundingMode(c.mxcsr);
+   sc.Begin();
+@@ -627,7 +627,7 @@ uint32_t CvtToI32(Ctx& c, bool dbl, const Xmm& s, bool truncate, uint64_t va) {
+   return uint32_t(r);
+ }
+ 
+-uint64_t CvtToI64(Ctx& c, bool dbl, const Xmm& s, bool truncate, uint64_t va) {
++uint64_t CvtToI64Ool(Ctx& c, bool dbl, const Xmm& s, bool truncate, uint64_t va) {
+   Scope sc(c, va);
+   uint8_t mode = truncate ? uint8_t(softfloat_round_minMag) : RoundingMode(c.mxcsr);
+   sc.Begin();
+@@ -663,7 +663,7 @@ void MinMaxSlow(Ctx& c, bool max, bool dbl, int lanes, Xmm& d, const Xmm& s,
+     MinMaxT<false>(c, max, lanes, d, s, va);
+ }
+ 
+-void CvtFloat(Ctx& c, bool to_dbl, int lanes, Xmm& d, const Xmm& s, uint64_t va) {
++void CvtFloatOol(Ctx& c, bool to_dbl, int lanes, Xmm& d, const Xmm& s, uint64_t va) {
+   Scope sc(c, va);
+   Xmm r = d;
+   if (to_dbl) {
+@@ -678,7 +678,7 @@ void CvtFloat(Ctx& c, bool to_dbl, int lanes, Xmm& d, const Xmm& s, uint64_t va)
+   d = r;
+ }
+ 
+-void CvtIntToF(Ctx& c, bool dbl, bool src64, uint64_t v, Xmm& d, uint64_t va) {
++void CvtIntToFOol(Ctx& c, bool dbl, bool src64, uint64_t v, Xmm& d, uint64_t va) {
+   Scope sc(c, va);
+   sc.Begin();
+   if (dbl)
+@@ -689,7 +689,7 @@ void CvtIntToF(Ctx& c, bool dbl, bool src64, uint64_t v, Xmm& d, uint64_t va) {
+   sc.Finish();
+ }
+ 
+-void CvtToDq(Ctx& c, bool dbl, bool truncate, Xmm& d, const Xmm& s, uint64_t va) {
++void CvtToDqOol(Ctx& c, bool dbl, bool truncate, Xmm& d, const Xmm& s, uint64_t va) {
+   Scope sc(c, va);
+   const uint8_t mode = truncate ? uint8_t(softfloat_round_minMag) : RoundingMode(c.mxcsr);
+   Xmm r{};
+@@ -704,7 +704,7 @@ void CvtToDq(Ctx& c, bool dbl, bool truncate, Xmm& d, const Xmm& s, uint64_t va)
+   d = r;
+ }
+ 
+-void Cvtdq2ps(Ctx& c, Xmm& d, const Xmm& s, uint64_t va) {
++void Cvtdq2psOol(Ctx& c, Xmm& d, const Xmm& s, uint64_t va) {
+   Scope sc(c, va);
+   Xmm r;
+   sc.Begin();
+@@ -716,7 +716,7 @@ void Cvtdq2ps(Ctx& c, Xmm& d, const Xmm& s, uint64_t va) {
+ 
+ // F16C. Half to single is exact: no rounding, DAZ and FTZ do not apply;
+ // an SNaN is quieted (IE), NaNs keep their payload.
+-void Cvtph2ps(Ctx& c, Xmm& d, const Xmm& s, int from, uint64_t va) {
++void Cvtph2psOol(Ctx& c, Xmm& d, const Xmm& s, int from, uint64_t va) {
+   Scope sc(c, va);
+   Xmm r;
+   for (int i = 0; i < 4; i++) {
+@@ -730,7 +730,7 @@ void Cvtph2ps(Ctx& c, Xmm& d, const Xmm& s, int from, uint64_t va) {
+ 
+ // Single to half, rounded by imm bits 1:0 (bit 2: MXCSR's mode instead).
+ // DAZ applies to the operands; the half results are not flushed (FTZ).
+-void Cvtps2ph(Ctx& c, Xmm& d, int to, const Xmm& s, uint8_t imm, uint64_t va) {
++void Cvtps2phOol(Ctx& c, Xmm& d, int to, const Xmm& s, uint8_t imm, uint64_t va) {
+   Scope sc(c, va);
+   if (!(imm & 4)) softfloat_roundingMode = RoundingMode(uint32_t(imm & 3) << 13);
+   Xmm r = d;
+diff --git a/src/x86/sse.h b/src/x86/sse.h
+index 3dcf9a4..aa990b3 100644
+--- a/src/x86/sse.h
++++ b/src/x86/sse.h
+@@ -64,71 +64,71 @@ void CheckAligned(Ctx& c, uint64_t a, uint64_t va, unsigned align);
+ // 3 UNORD_Q, 4 NEQ_UQ, 5 NLT_US, 6 NLE_US, 7 ORD_Q, 8 EQ_UQ, ...
+ // 15 TRUE_UQ; 16-31 the same with signalling flipped); legacy SSE passes
+ // imm8 & 7.
+-void Cmp(Ctx& c, bool dbl, int lanes, Xmm& d, const Xmm& s, uint8_t pred,
++void CmpOol(Ctx& c, bool dbl, int lanes, Xmm& d, const Xmm& s, uint8_t pred,
+          uint64_t va);
+ 
+ // (U)COMISS/SD of the low lanes: 0 greater, 1 less, 2 equal, 3 unordered
+ // (the caller sets ZF/PF/CF). `ordered` = COMIS (invalid on QNaN too).
+-int Comi(Ctx& c, bool dbl, bool ordered, const Xmm& a, const Xmm& b,
++int ComiOol(Ctx& c, bool dbl, bool ordered, const Xmm& a, const Xmm& b,
+          uint64_t va);
+ 
+ 
+ // RSQRTPS: d = 1/sqrt(s) in all four float lanes (see above). No flags:
+ // ±0 and denormals give ±inf, negative values the default NaN, +inf +0,
+ // NaNs themselves quieted.
+-void Rsqrt(Xmm& d, const Xmm& s);
++void RsqrtOol(Xmm& d, const Xmm& s);
+ uint32_t RsqrtLane(uint32_t x);
+ 
+ // CVTSI2SD: the low lane of d = (double)v (always exact).
+-void Cvtsi2sd(Xmm& d, int32_t v);
++void Cvtsi2sdOol(Xmm& d, int32_t v);
+ 
+ // CVT(T)SS2SI / CVT(T)SD2SI of the low lane of s.
+-uint32_t CvtToI32(Ctx& c, bool dbl, const Xmm& s, bool truncate, uint64_t va);
++uint32_t CvtToI32Ool(Ctx& c, bool dbl, const Xmm& s, bool truncate, uint64_t va);
+ 
+ // CVT(T)SS2SI / CVT(T)SD2SI to a 64-bit register.
+-uint64_t CvtToI64(Ctx& c, bool dbl, const Xmm& s, bool truncate, uint64_t va);
++uint64_t CvtToI64Ool(Ctx& c, bool dbl, const Xmm& s, bool truncate, uint64_t va);
+ 
+ 
+ // CVTSS2SD / CVTPS2PD (to_dbl, 1 or 2 lanes) and CVTSD2SS / CVTPD2PS.
+ // Scalar forms keep d's other lanes; CVTPD2PS zeroes its upper half.
+-void CvtFloat(Ctx& c, bool to_dbl, int lanes, Xmm& d, const Xmm& s, uint64_t va);
++void CvtFloatOol(Ctx& c, bool to_dbl, int lanes, Xmm& d, const Xmm& s, uint64_t va);
+ 
+ // CVTSI2SS / CVTSI2SD of a 32-bit or 64-bit (src64) integer into the low
+ // lane, rounded by MXCSR (only int64 -> double and int -> float can be
+ // inexact).
+-void CvtIntToF(Ctx& c, bool dbl, bool src64, uint64_t v, Xmm& d, uint64_t va);
++void CvtIntToFOol(Ctx& c, bool dbl, bool src64, uint64_t v, Xmm& d, uint64_t va);
+ 
+ // CVTTPS2DQ / CVTPS2DQ (truncate false) and CVTTPD2DQ / CVTPD2DQ (dbl,
+ // two lanes into the low half, the upper one zeroed): float lanes to
+ // int32, 0x80000000 for NaN and out of range (invalid).
+-void CvtToDq(Ctx& c, bool dbl, bool truncate, Xmm& d, const Xmm& s, uint64_t va);
++void CvtToDqOol(Ctx& c, bool dbl, bool truncate, Xmm& d, const Xmm& s, uint64_t va);
+ 
+ // F16C: VCVTPH2PS, four half lanes of s from 16-bit lane `from` (0 or 4)
+ // into d's four floats; VCVTPS2PH, s's four floats into d's 16-bit lanes
+ // from `to`, the others kept, rounded by imm.
+-void Cvtph2ps(Ctx& c, Xmm& d, const Xmm& s, int from, uint64_t va);
+-void Cvtps2ph(Ctx& c, Xmm& d, int to, const Xmm& s, uint8_t imm, uint64_t va);
++void Cvtph2psOol(Ctx& c, Xmm& d, const Xmm& s, int from, uint64_t va);
++void Cvtps2phOol(Ctx& c, Xmm& d, int to, const Xmm& s, uint8_t imm, uint64_t va);
+ 
+ // HADDPS/PD, HSUBPS/PD (SSE3): pairs of adjacent lanes of d, then of s,
+ // added (subtracted: the higher lane from the lower). ADDSUBPS/PD: even
+ // lanes d - s, odd ones d + s.
+-void HorizOp(Ctx& c, bool dbl, bool sub, Xmm& d, const Xmm& s, uint64_t va);
+-void AddSub(Ctx& c, bool dbl, Xmm& d, const Xmm& s, uint64_t va);
++void HorizOpOol(Ctx& c, bool dbl, bool sub, Xmm& d, const Xmm& s, uint64_t va);
++void AddSubOol(Ctx& c, bool dbl, Xmm& d, const Xmm& s, uint64_t va);
+ 
+ // ROUNDPS/PD/SS/SD (SSE4.1): lanes rounded to integers, imm bits 1:0 the
+ // mode (bit 2: MXCSR's instead), bit 3 suppressing PE. Scalar forms
+ // (lanes = 1) keep d's upper lanes.
+-void Round(Ctx& c, bool dbl, int lanes, Xmm& d, const Xmm& s, uint8_t imm, uint64_t va);
++void RoundOol(Ctx& c, bool dbl, int lanes, Xmm& d, const Xmm& s, uint8_t imm, uint64_t va);
+ 
+ // DPPS/DPPD (SSE4.1): the products of the lanes imm selects (bits 7:4,
+ // 5:4 for DPPD; others +0) summed pairwise, written to the lanes imm
+ // bits 3:0 (1:0) select, the others zeroed.
+-void Dp(Ctx& c, bool dbl, Xmm& d, const Xmm& s, uint8_t imm, uint64_t va);
++void DpOol(Ctx& c, bool dbl, Xmm& d, const Xmm& s, uint8_t imm, uint64_t va);
+ 
+ // RCPPS: d = 1/s in all four float lanes, correctly rounded (see above).
+ // No flags: ±0 and denormals give ±inf, results below the normal range
+ // ±0, ±inf ±0, NaNs themselves quieted.
+-void Rcp(Xmm& d, const Xmm& s);
++void RcpOol(Xmm& d, const Xmm& s);
+ uint32_t RcpLane(uint32_t x);
+ inline void RcpSs(Xmm& d, const Xmm& s) {
+   SetLane<uint32_t>(d, 0, RcpLane(Lane<uint32_t>(s, 0)));
+@@ -140,7 +140,7 @@ inline void RsqrtSs(Xmm& d, const Xmm& s) {
+ }
+ 
+ // CVTDQ2PS: four int32 lanes to float, rounded by MXCSR.
+-void Cvtdq2ps(Ctx& c, Xmm& d, const Xmm& s, uint64_t va);
++void Cvtdq2psOol(Ctx& c, Xmm& d, const Xmm& s, uint64_t va);
+ 
+ // CVTDQ2PD: the two low int32 lanes of s as doubles (always exact).
+ inline Xmm Cvtdq2pd(const Xmm& s) {
+@@ -629,4 +629,97 @@ inline void ShufPd(Xmm& d, const Xmm& s, uint8_t imm) {
+   d = r;
+ }
+ 
++// ---- inline entry points ----------------------------------------------
++// Lifted code keeps XMM registers in locals (lifter CacheXmm). A local
++// whose address reaches an out-of-line function counts as escaped, and
++// the compiler then reloads it after every guest memory store. These
++// wrappers hand the out-of-line versions copies instead.
++#define RECOMP_SSE_DS(call)  \
++  Xmm td = d;                \
++  const Xmm ts = s;          \
++  call;                      \
++  d = td
++[[gnu::always_inline]] inline void Cmp(Ctx& c, bool dbl, int lanes, Xmm& d, const Xmm& s,
++                                       uint8_t pred, uint64_t va) {
++  RECOMP_SSE_DS(CmpOol(c, dbl, lanes, td, ts, pred, va));
++}
++// Under lazy flags (all exceptions masked, nearest, no DAZ/FTZ) the result
++// needs no MXCSR work: the low lanes compared as the host compares them.
++[[gnu::always_inline]] inline int Comi(Ctx& c, bool dbl, bool ordered, const Xmm& a,
++                                       const Xmm& b, uint64_t va) {
++#if defined(__x86_64__)
++  if (quiet::Lazy(c)) {
++    if (dbl) {
++      double x, y;
++      std::memcpy(&x, a.b, 8);
++      std::memcpy(&y, b.b, 8);
++      return (x != x || y != y) ? 3 : x == y ? 2 : x < y ? 1 : 0;
++    }
++    float x, y;
++    std::memcpy(&x, a.b, 4);
++    std::memcpy(&y, b.b, 4);
++    return (x != x || y != y) ? 3 : x == y ? 2 : x < y ? 1 : 0;
++  }
++#endif
++  const Xmm ta = a, tb = b;
++  return ComiOol(c, dbl, ordered, ta, tb, va);
++}
++[[gnu::always_inline]] inline void Rsqrt(Xmm& d, const Xmm& s) { RECOMP_SSE_DS(RsqrtOol(td, ts)); }
++[[gnu::always_inline]] inline void Cvtsi2sd(Xmm& d, int32_t v) {
++  Xmm td = d;
++  Cvtsi2sdOol(td, v);
++  d = td;
++}
++[[gnu::always_inline]] inline uint32_t CvtToI32(Ctx& c, bool dbl, const Xmm& s, bool truncate,
++                                                uint64_t va) {
++  const Xmm ts = s;
++  return CvtToI32Ool(c, dbl, ts, truncate, va);
++}
++[[gnu::always_inline]] inline uint64_t CvtToI64(Ctx& c, bool dbl, const Xmm& s, bool truncate,
++                                                uint64_t va) {
++  const Xmm ts = s;
++  return CvtToI64Ool(c, dbl, ts, truncate, va);
++}
++[[gnu::always_inline]] inline void CvtFloat(Ctx& c, bool to_dbl, int lanes, Xmm& d, const Xmm& s,
++                                            uint64_t va) {
++  RECOMP_SSE_DS(CvtFloatOol(c, to_dbl, lanes, td, ts, va));
++}
++[[gnu::always_inline]] inline void CvtIntToF(Ctx& c, bool dbl, bool src64, uint64_t v, Xmm& d,
++                                             uint64_t va) {
++  Xmm td = d;
++  CvtIntToFOol(c, dbl, src64, v, td, va);
++  d = td;
++}
++[[gnu::always_inline]] inline void CvtToDq(Ctx& c, bool dbl, bool truncate, Xmm& d, const Xmm& s,
++                                           uint64_t va) {
++  RECOMP_SSE_DS(CvtToDqOol(c, dbl, truncate, td, ts, va));
++}
++[[gnu::always_inline]] inline void Cvtph2ps(Ctx& c, Xmm& d, const Xmm& s, int from, uint64_t va) {
++  RECOMP_SSE_DS(Cvtph2psOol(c, td, ts, from, va));
++}
++[[gnu::always_inline]] inline void Cvtps2ph(Ctx& c, Xmm& d, int to, const Xmm& s, uint8_t imm,
++                                            uint64_t va) {
++  RECOMP_SSE_DS(Cvtps2phOol(c, td, to, ts, imm, va));
++}
++[[gnu::always_inline]] inline void HorizOp(Ctx& c, bool dbl, bool sub, Xmm& d, const Xmm& s,
++                                           uint64_t va) {
++  RECOMP_SSE_DS(HorizOpOol(c, dbl, sub, td, ts, va));
++}
++[[gnu::always_inline]] inline void AddSub(Ctx& c, bool dbl, Xmm& d, const Xmm& s, uint64_t va) {
++  RECOMP_SSE_DS(AddSubOol(c, dbl, td, ts, va));
++}
++[[gnu::always_inline]] inline void Round(Ctx& c, bool dbl, int lanes, Xmm& d, const Xmm& s,
++                                         uint8_t imm, uint64_t va) {
++  RECOMP_SSE_DS(RoundOol(c, dbl, lanes, td, ts, imm, va));
++}
++[[gnu::always_inline]] inline void Dp(Ctx& c, bool dbl, Xmm& d, const Xmm& s, uint8_t imm,
++                                      uint64_t va) {
++  RECOMP_SSE_DS(DpOol(c, dbl, td, ts, imm, va));
++}
++[[gnu::always_inline]] inline void Rcp(Xmm& d, const Xmm& s) { RECOMP_SSE_DS(RcpOol(td, ts)); }
++[[gnu::always_inline]] inline void Cvtdq2ps(Ctx& c, Xmm& d, const Xmm& s, uint64_t va) {
++  RECOMP_SSE_DS(Cvtdq2psOol(c, td, ts, va));
++}
++#undef RECOMP_SSE_DS
++
+ }  // namespace recomp::sse
+diff --git a/src/x86/sse_quiet.h b/src/x86/sse_quiet.h
+index a9120ec..a4b5a0e 100644
+--- a/src/x86/sse_quiet.h
++++ b/src/x86/sse_quiet.h
+@@ -207,7 +207,10 @@ template <bool D>
+       (dbl ? quiet::Arith<true>(op, lanes == 1, d, s) : quiet::Arith<false>(op, lanes == 1, d, s)))
+     return;
+ #endif
+-  ArithSlow(c, op, dbl, lanes, d, s, va);
++  Xmm td = d;  // copies: d and s are often lifted locals (see sse.h)
++  const Xmm ts = s;
++  ArithSlow(c, op, dbl, lanes, td, ts, va);
++  d = td;
+ }
+ 
+ // SQRTSD/SQRTSS/SQRTPD/SQRTPS: d = sqrt(s), lane-wise; scalar forms keep
+@@ -222,7 +225,10 @@ template <bool D>
+       (dbl ? quiet::Sqrt<true>(lanes == 1, d, s) : quiet::Sqrt<false>(lanes == 1, d, s)))
+     return;
+ #endif
+-  SqrtSlow(c, dbl, lanes, d, s, va);
++  Xmm td = d;
++  const Xmm ts = s;
++  SqrtSlow(c, dbl, lanes, td, ts, va);
++  d = td;
+ }
+ 
+ // MINSS/SD/PS/PD (max = false) and MAXSS/SD/PS/PD, lane-wise: d op s ? d : s.
+@@ -241,7 +247,10 @@ template <bool D>
+            : quiet::MinMax<false>(max, lanes == 1, d, s)))
+     return;
+ #endif
+-  MinMaxSlow(c, max, dbl, lanes, d, s, va);
++  Xmm td = d;
++  const Xmm ts = s;
++  MinMaxSlow(c, max, dbl, lanes, td, ts, va);
++  d = td;
+ }
+ 
+ }  // namespace recomp::sse
+diff --git a/tools/lifter_x86/emit.cpp b/tools/lifter_x86/emit.cpp
+index 092abe9..1fe1c4b 100644
+--- a/tools/lifter_x86/emit.cpp
++++ b/tools/lifter_x86/emit.cpp
+@@ -3,6 +3,7 @@
+ #include <algorithm>
+ #include <cstdarg>
+ #include <cstdio>
++#include <cstdlib>
+ #include <functional>
+ 
+ namespace lifter {
+@@ -2765,7 +2766,7 @@ void InsnEmitter::EmitAvx() {
+       return;
+     case ZYDIS_MNEMONIC_VZEROALL:
+       L("for (::recomp::Xmm& x : c.ymm_hi) x = ::recomp::Xmm{};");
+-      L("for (int i = 0; i < 16; i++) c.xmm[i] = ::recomp::Xmm{};");
++      for (int i = 0; i < 16; i++) L(Fmt("c.xmm[%d] = ::recomp::Xmm{};", i));
+       return;
+     // vblendvps/pd, vpblendvb: the mask is the fourth operand (legacy SSE's
+     // implicit xmm0).
+@@ -3411,10 +3412,10 @@ void InsnEmitter::EmitWideMem() {
+       L("  rax = lo; rdx = hi; }");
+       return;
+     case ZYDIS_MNEMONIC_FXSAVE: case ZYDIS_MNEMONIC_FXSAVE64:
+-      L(X64() ? "::recomp::sse::Fxsave(c, B + m0);" : "::recomp::sse::Fxsave(c, B + m0, 8);");
++      L(X64() ? "LIFT_SPILL; ::recomp::sse::Fxsave(c, B + m0);" : "LIFT_SPILL; ::recomp::sse::Fxsave(c, B + m0, 8);");
+       return;
+     case ZYDIS_MNEMONIC_FXRSTOR: case ZYDIS_MNEMONIC_FXRSTOR64:
+-      L(Fmt("::recomp::sse::Fxrstor(c, B + m0, %s%s);", va.c_str(), X64() ? "" : ", 8"));
++      L(Fmt("LIFT_SPILL; ::recomp::sse::Fxrstor(c, B + m0, %s%s); LIFT_RELOAD;", va.c_str(), X64() ? "" : ", 8"));
+       return;
+     default:
+       return Unimpl();
+@@ -3842,6 +3843,7 @@ Emitter::Emitter(const Program& p, const Decoder& dec) : p_(p), dec_(dec) {
+ void Emitter::EmitFunction(const Function& f, std::string* out,
+                            std::set<uint64_t>* refs, EmitStats* stats) {
+   std::string& o = *out;
++  const size_t fn_start = o.size();
+   auto nm = p_.names.find(f.entry);
+   o += "// " + (nm != p_.names.end() ? nm->second : FnName(f.entry)) + "\n";
+   // A replaced function keeps its lifted body under another name, for the
+@@ -3976,6 +3978,61 @@ void Emitter::EmitFunction(const Function& f, std::string* out,
+          "    return;\n"
+          "  }\n";
+   o += "}\n\n";
++  CacheXmm(&o, fn_start);
++}
++
++// XMM registers in locals (the general registers are cached by
++// LIFT_ENTER): the function's c.xmm[i] become locals Xi, loaded after
++// LIFT_ENTER, written back at every LIFT_SPILL and reloaded at every
++// LIFT_RELOAD. Guest memory stores go through B and may alias c, so with
++// the registers in c every SSE value was reloaded after each store.
++// SWARC_NO_XMM_LOCALS=1 at lift time keeps them in c (A/B).
++void Emitter::CacheXmm(std::string* out, size_t start) {
++  static const bool off = [] {
++    const char* e = std::getenv("SWARC_NO_XMM_LOCALS");
++    return e && *e && *e != '0';
++  }();
++  if (off) return;
++  std::string& o = *out;
++  static const std::string kX = "c.xmm[";
++  bool used[16] = {};
++  std::string body;
++  body.reserve(o.size() - start);
++  size_t at = start;
++  for (size_t p; (p = o.find(kX, at)) != std::string::npos;) {
++    size_t q = p + kX.size(), n = 0;
++    int i = 0;
++    while (q < o.size() && o[q] >= '0' && o[q] <= '9') i = i * 10 + (o[q++] - '0'), n++;
++    if (!n || q >= o.size() || o[q] != ']' || i >= 16) {
++      body.append(o, at, q - at);
++      at = q;
++      continue;
++    }
++    used[i] = true;
++    body.append(o, at, p - at);
++    body += Fmt("X%d", i);
++    at = q + 1;
++  }
++  body.append(o, at, std::string::npos);
++  std::string decl, spill, reload;
++  for (int i = 0; i < 16; i++) {
++    if (!used[i]) continue;
++    decl += Fmt(" ::recomp::Xmm X%d = c.xmm[%d];", i, i);
++    spill += Fmt(" c.xmm[%d] = X%d;", i, i);
++    reload += Fmt(" X%d = c.xmm[%d];", i, i);
++  }
++  if (decl.empty()) return;
++  static const std::string kEnter = "  LIFT_ENTER\n";
++  const size_t e = body.find(kEnter);
++  if (e == std::string::npos) return;  // nothing to anchor the loads to: keep c.xmm
++  auto replace_all = [&body](const std::string& a, const std::string& b) {
++    for (size_t p = 0; (p = body.find(a, p)) != std::string::npos; p += b.size())
++      body.replace(p, a.size(), b);
++  };
++  replace_all("LIFT_SPILL;", "LIFT_SPILL;" + spill);
++  replace_all("LIFT_RELOAD;", "LIFT_RELOAD;" + reload);
++  body.insert(body.find(kEnter) + kEnter.size(), " " + decl + "\n");
++  o.replace(start, std::string::npos, body);
+ }
+ 
+ // Polling loops (ARCHITECTURE.md, "Polling loops"): up to 8 instructions
+diff --git a/tools/lifter_x86/emit.h b/tools/lifter_x86/emit.h
+index febf5de..a74f1cd 100644
+--- a/tools/lifter_x86/emit.h
++++ b/tools/lifter_x86/emit.h
+@@ -32,6 +32,7 @@ class Emitter {
+   std::map<uint64_t, uint64_t> FindX87Runs(const Function& f,
+                                            const std::set<uint64_t>& labels) const;
+   std::set<uint64_t> FindPollLoops(const Function& f) const;
++  void CacheXmm(std::string* out, size_t start);
+   void EmitX87Run(const Function& f, std::map<uint64_t, Insn>::const_iterator first,
+                   std::map<uint64_t, Insn>::const_iterator last, std::string* out,
+                   std::set<uint64_t>* refs, EmitStats* stats) const;
+-- 
+2.51.0.windows.1
+

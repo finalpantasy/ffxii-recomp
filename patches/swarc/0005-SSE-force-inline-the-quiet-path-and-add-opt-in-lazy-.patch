@@ -1,0 +1,203 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: finalpantasy <finalpantasy@users.noreply.github.com>
+Date: Sun, 22 Nov 2026 01:36:08 -0500
+Subject: [PATCH 05/34] SSE: force-inline the quiet path and add opt-in lazy
+ flags
+
+clang at -O2 left the inline quiet path out of line, so mark it
+always_inline and the full paths cold. Add g_lazy_flags: when guest and
+host MXCSR control are the defaults, arithmetic, sqrt and min/max run as
+the bare native instruction without updating sticky exception flags.
+Off by default; a program opts in only if it never reads those flags.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/x86/sse.cpp     |  1 +
+ src/x86/sse_quiet.h | 81 +++++++++++++++++++++++++++++++++------------
+ 2 files changed, 60 insertions(+), 22 deletions(-)
+
+diff --git a/src/x86/sse.cpp b/src/x86/sse.cpp
+index bab2b40..34fc7a0 100644
+--- a/src/x86/sse.cpp
++++ b/src/x86/sse.cpp
+@@ -27,6 +27,7 @@ const bool kNativeSse = [] {
+   const char* e = std::getenv("RECOMP_SOFT_SSE");
+   return !(e && *e && *e != '0');
+ }();
++bool g_lazy_flags = false;
+ #endif
+ 
+ namespace {
+diff --git a/src/x86/sse_quiet.h b/src/x86/sse_quiet.h
+index d1d9cc7..7502fe7 100644
+--- a/src/x86/sse_quiet.h
++++ b/src/x86/sse_quiet.h
+@@ -24,22 +24,32 @@ enum Op : uint8_t { kAdd, kSub, kMul, kDiv };
+ #if defined(__x86_64__)
+ // False under RECOMP_SOFT_SSE=1: everything goes the SoftFloat way.
+ extern const bool kNativeSse;
++// Lazy flags (off by default; a program opts in): with the default MXCSR
++// control on both sides (exceptions masked, round to nearest, no DAZ or FTZ)
++// the native instruction gives the guest's exact result, so arithmetic runs
++// bare and the sticky exception flags in c.mxcsr are not updated. Only use it
++// for programs that never read those flags.
++extern bool g_lazy_flags;
+ 
+ namespace quiet {
+ 
+ typedef float V4 __attribute__((vector_size(16)));
+ 
+-inline bool HostRoundsNearest() {
++[[gnu::always_inline]] inline bool HostRoundsNearest() {
+   static thread_local uint32_t uses = 0, ok = 0;
+   if ((uses++ & 4095) == 0) {
+     uint32_t h;
+     asm volatile("stmxcsr %0" : "=m"(h));
+-    ok = (h & 0x7F80) == 0x1F80;
++    ok = (h & 0xFFC0) == 0x1F80;  // masked, nearest, no DAZ/FTZ
+   }
+   return ok;
+ }
+ 
+-inline bool Ok(const Ctx& c, bool need_pe) {
++[[gnu::always_inline]] inline bool Lazy(const Ctx& c) {
++  return kNativeSse && g_lazy_flags && (c.mxcsr & 0xFFC0) == 0x1F80 && HostRoundsNearest();
++}
++
++[[gnu::always_inline]] inline bool Ok(const Ctx& c, bool need_pe) {
+   return kNativeSse && (c.mxcsr & 0x7F80) == 0x1F80 && (!need_pe || (c.mxcsr & 0x20)) &&
+          HostRoundsNearest();
+ }
+@@ -84,14 +94,7 @@ struct Lanes {
+   } while (0)
+ 
+ template <bool D>
+-[[gnu::always_inline]] inline bool Arith(Op op, bool scalar, Xmm& d, const Xmm& s) {
+-  const int n = scalar ? 1 : Lanes<D>::kN;
+-  const Lanes<D> a(d.b), b(s.b);
+-  if (a.Special(n) | b.Special(n)) return false;
+-  if (op == kDiv && b.Zero(n)) return false;  // ZE, or 0/0
+-  V4 r, sv;
+-  std::memcpy(&r, d.b, 16);
+-  std::memcpy(&sv, s.b, 16);
++[[gnu::always_inline]] inline void Op2(Op op, bool scalar, V4& r, V4 sv) {
+   switch (op << 1 | int(scalar)) {
+     case kAdd << 1 | 0: RECOMP_SSE_BARE2(r, sv, "addpd", "addps"); break;
+     case kAdd << 1 | 1: RECOMP_SSE_BARE2(r, sv, "addsd", "addss"); break;
+@@ -102,6 +105,27 @@ template <bool D>
+     case kDiv << 1 | 0: RECOMP_SSE_BARE2(r, sv, "divpd", "divps"); break;
+     default: RECOMP_SSE_BARE2(r, sv, "divsd", "divss"); break;
+   }
++}
++
++template <bool D>
++[[gnu::always_inline]] inline void Bare(Op op, bool scalar, Xmm& d, const Xmm& s) {
++  V4 r, sv;
++  std::memcpy(&r, d.b, 16);
++  std::memcpy(&sv, s.b, 16);
++  Op2<D>(op, scalar, r, sv);
++  std::memcpy(d.b, &r, 16);
++}
++
++template <bool D>
++[[gnu::always_inline]] inline bool Arith(Op op, bool scalar, Xmm& d, const Xmm& s) {
++  const int n = scalar ? 1 : Lanes<D>::kN;
++  const Lanes<D> a(d.b), b(s.b);
++  if (a.Special(n) | b.Special(n)) return false;
++  if (op == kDiv && b.Zero(n)) return false;  // ZE, or 0/0
++  V4 r, sv;
++  std::memcpy(&r, d.b, 16);
++  std::memcpy(&sv, s.b, 16);
++  Op2<D>(op, scalar, r, sv);
+   // Overflow (infinity) or a denormal result; a product or quotient of
+   // nonzero operands that came out zero underflowed.
+   const Lanes<D> o(&r);
+@@ -111,11 +135,11 @@ template <bool D>
+ }
+ 
+ template <bool D>
+-[[gnu::always_inline]] inline bool Sqrt(bool scalar, Xmm& d, const Xmm& s) {
++[[gnu::always_inline]] inline bool Sqrt(bool scalar, Xmm& d, const Xmm& s, bool check = true) {
+   const int n = scalar ? 1 : Lanes<D>::kN;
+   const Lanes<D> b(s.b);
+   // Special operands, and negative nonzero ones (invalid).
+-  if (b.Special(n) | (b.Neg(n) & ~b.Zero(n))) return false;
++  if (check && (b.Special(n) | (b.Neg(n) & ~b.Zero(n)))) return false;
+   V4 dv, sv;
+   std::memcpy(&dv, d.b, 16);
+   std::memcpy(&sv, s.b, 16);
+@@ -128,9 +152,9 @@ template <bool D>
+ }
+ 
+ template <bool D>
+-[[gnu::always_inline]] inline bool MinMax(bool max, bool scalar, Xmm& d, const Xmm& s) {
++[[gnu::always_inline]] inline bool MinMax(bool max, bool scalar, Xmm& d, const Xmm& s, bool check = true) {
+   const int n = scalar ? 1 : Lanes<D>::kN;
+-  if (Lanes<D>(d.b).Special(n) | Lanes<D>(s.b).Special(n)) return false;
++  if (check && (Lanes<D>(d.b).Special(n) | Lanes<D>(s.b).Special(n))) return false;
+   V4 dv, sv;
+   std::memcpy(&dv, d.b, 16);
+   std::memcpy(&sv, s.b, 16);
+@@ -147,20 +171,24 @@ template <bool D>
+ #undef RECOMP_SSE_BARE2
+ #undef RECOMP_SSE_BARE
+ 
+-inline bool KnownLanes(bool dbl, int lanes) { return lanes == 1 || lanes == (dbl ? 2 : 4); }
++[[gnu::always_inline]] inline bool KnownLanes(bool dbl, int lanes) { return lanes == 1 || lanes == (dbl ? 2 : 4); }
+ 
+ }  // namespace quiet
+ #endif
+ 
+ // The full paths (native with the guest's MXCSR, or SoftFloat), in sse.cpp.
+-void ArithSlow(Ctx& c, Op op, bool dbl, int lanes, Xmm& d, const Xmm& s, uint64_t va);
+-void SqrtSlow(Ctx& c, bool dbl, int lanes, Xmm& d, const Xmm& s, uint64_t va);
+-void MinMaxSlow(Ctx& c, bool max, bool dbl, int lanes, Xmm& d, const Xmm& s, uint64_t va);
++[[gnu::cold]] void ArithSlow(Ctx& c, Op op, bool dbl, int lanes, Xmm& d, const Xmm& s, uint64_t va);
++[[gnu::cold]] void SqrtSlow(Ctx& c, bool dbl, int lanes, Xmm& d, const Xmm& s, uint64_t va);
++[[gnu::cold]] void MinMaxSlow(Ctx& c, bool max, bool dbl, int lanes, Xmm& d, const Xmm& s, uint64_t va);
+ 
+ // d = d op s, lane-wise: `lanes` lanes of double (dbl) or float. Scalar
+ // forms pass lanes = 1 and keep the upper lanes of d.
+-inline void Arith(Ctx& c, Op op, bool dbl, int lanes, Xmm& d, const Xmm& s, uint64_t va) {
++[[gnu::always_inline]] inline void Arith(Ctx& c, Op op, bool dbl, int lanes, Xmm& d, const Xmm& s, uint64_t va) {
+ #if defined(__x86_64__)
++  if (quiet::KnownLanes(dbl, lanes) && quiet::Lazy(c)) {
++    dbl ? quiet::Bare<true>(op, lanes == 1, d, s) : quiet::Bare<false>(op, lanes == 1, d, s);
++    return;
++  }
+   if (quiet::KnownLanes(dbl, lanes) && quiet::Ok(c, true) &&
+       (dbl ? quiet::Arith<true>(op, lanes == 1, d, s) : quiet::Arith<false>(op, lanes == 1, d, s)))
+     return;
+@@ -170,8 +198,12 @@ inline void Arith(Ctx& c, Op op, bool dbl, int lanes, Xmm& d, const Xmm& s, uint
+ 
+ // SQRTSD/SQRTSS/SQRTPD/SQRTPS: d = sqrt(s), lane-wise; scalar forms keep
+ // the upper lanes of d.
+-inline void Sqrt(Ctx& c, bool dbl, int lanes, Xmm& d, const Xmm& s, uint64_t va) {
++[[gnu::always_inline]] inline void Sqrt(Ctx& c, bool dbl, int lanes, Xmm& d, const Xmm& s, uint64_t va) {
+ #if defined(__x86_64__)
++  if (quiet::KnownLanes(dbl, lanes) && quiet::Lazy(c)) {
++    dbl ? quiet::Sqrt<true>(lanes == 1, d, s, false) : quiet::Sqrt<false>(lanes == 1, d, s, false);
++    return;
++  }
+   if (quiet::KnownLanes(dbl, lanes) && quiet::Ok(c, true) &&
+       (dbl ? quiet::Sqrt<true>(lanes == 1, d, s) : quiet::Sqrt<false>(lanes == 1, d, s)))
+     return;
+@@ -182,9 +214,14 @@ inline void Sqrt(Ctx& c, bool dbl, int lanes, Xmm& d, const Xmm& s, uint64_t va)
+ // MINSS/SD/PS/PD (max = false) and MAXSS/SD/PS/PD, lane-wise: d op s ? d : s.
+ // A NaN in either operand (invalid, quiet ones too) or equal values,
+ // zeros of either sign included, give s. Scalar forms keep d's upper lanes.
+-inline void MinMax(Ctx& c, bool max, bool dbl, int lanes, Xmm& d, const Xmm& s,
++[[gnu::always_inline]] inline void MinMax(Ctx& c, bool max, bool dbl, int lanes, Xmm& d, const Xmm& s,
+                    uint64_t va) {
+ #if defined(__x86_64__)
++  if (quiet::KnownLanes(dbl, lanes) && quiet::Lazy(c)) {
++    dbl ? quiet::MinMax<true>(max, lanes == 1, d, s, false)
++        : quiet::MinMax<false>(max, lanes == 1, d, s, false);
++    return;
++  }
+   if (quiet::KnownLanes(dbl, lanes) && quiet::Ok(c, false) &&
+       (dbl ? quiet::MinMax<true>(max, lanes == 1, d, s)
+            : quiet::MinMax<false>(max, lanes == 1, d, s)))
+-- 
+2.51.0.windows.1
+

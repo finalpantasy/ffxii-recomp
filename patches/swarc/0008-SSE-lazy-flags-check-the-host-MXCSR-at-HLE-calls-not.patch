@@ -1,0 +1,83 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: finalpantasy <finalpantasy@users.noreply.github.com>
+Date: Sun, 22 Nov 2026 03:33:16 -0500
+Subject: [PATCH 08/34] SSE lazy flags: check the host MXCSR at HLE calls, not
+ per instruction
+
+The lazy path read a thread-local counter on every SSE instruction to
+recheck the host MXCSR. Only host code can change it, so CallThunk now
+restores the default control (keeping sticky flags) after each handler
+while lazy flags are on, and the lazy check reads only the guest MXCSR.
+g_lazy_flags must now be set only when kNativeSse is true. In FFXII
+combat on the GPU build this holds the 60 fps cap.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/x86/hle.cpp     |  5 +++++
+ src/x86/sse_quiet.h | 18 ++++++++++++++++--
+ 2 files changed, 21 insertions(+), 2 deletions(-)
+
+diff --git a/src/x86/hle.cpp b/src/x86/hle.cpp
+index 7729d79..502687c 100644
+--- a/src/x86/hle.cpp
++++ b/src/x86/hle.cpp
+@@ -14,6 +14,7 @@
+ 
+ #include "runtime/log.h"
+ #include "x86/watchdog.h"
++#include "x86/sse_quiet.h"
+ 
+ namespace recomp::hle {
+ 
+@@ -219,6 +220,10 @@ void CallThunk(Ctx& c, gaddr thunk) {
+     if (s->serialised) sl = std::unique_lock<std::recursive_mutex>(serial_mu);
+     r = d.fn(c);
+   }
++#if defined(__x86_64__)
++  // Lazy SSE relies on the host MXCSR staying at the default (sse_quiet.h).
++  if (sse::g_lazy_flags) sse::EnsureHostMxcsr();
++#endif
+   if (trace) TraceF("[%04X]   -> %llX\n", CurrentThread()->tid, (unsigned long long)r);
+   if (x64) {
+     c.rax = r;
+diff --git a/src/x86/sse_quiet.h b/src/x86/sse_quiet.h
+index 7502fe7..a9120ec 100644
+--- a/src/x86/sse_quiet.h
++++ b/src/x86/sse_quiet.h
+@@ -28,9 +28,23 @@ extern const bool kNativeSse;
+ // control on both sides (exceptions masked, round to nearest, no DAZ or FTZ)
+ // the native instruction gives the guest's exact result, so arithmetic runs
+ // bare and the sticky exception flags in c.mxcsr are not updated. Only use it
+-// for programs that never read those flags.
++// for programs that never read those flags. Set it only when kNativeSse is
++// true. While it is set, the host MXCSR is kept at the default by
++// EnsureHostMxcsr after every HLE call (host code is the only thing that can
++// change it), so the lazy path does not check the host per instruction.
+ extern bool g_lazy_flags;
+ 
++// Puts the host MXCSR control back to the default (masked, nearest, no DAZ
++// or FTZ) if host code changed it, keeping the sticky flags.
++[[gnu::always_inline]] inline void EnsureHostMxcsr() {
++  uint32_t h;
++  asm volatile("stmxcsr %0" : "=m"(h));
++  if ((h & 0xFFC0) != 0x1F80) {
++    h = (h & 0x3F) | 0x1F80;
++    asm volatile("ldmxcsr %0" : : "m"(h));
++  }
++}
++
+ namespace quiet {
+ 
+ typedef float V4 __attribute__((vector_size(16)));
+@@ -46,7 +60,7 @@ typedef float V4 __attribute__((vector_size(16)));
+ }
+ 
+ [[gnu::always_inline]] inline bool Lazy(const Ctx& c) {
+-  return kNativeSse && g_lazy_flags && (c.mxcsr & 0xFFC0) == 0x1F80 && HostRoundsNearest();
++  return g_lazy_flags && (c.mxcsr & 0xFFC0) == 0x1F80;
+ }
+ 
+ [[gnu::always_inline]] inline bool Ok(const Ctx& c, bool need_pe) {
+-- 
+2.51.0.windows.1
+

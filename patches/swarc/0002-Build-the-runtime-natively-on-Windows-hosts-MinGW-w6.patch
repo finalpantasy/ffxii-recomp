@@ -1,0 +1,1367 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: finalpantasy <finalpantasy@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 16:21:39 -0500
+Subject: [PATCH 02/34] Build the runtime natively on Windows hosts (MinGW-w64
+ UCRT clang)
+
+- platform_win.cpp: VirtualAlloc-backed VM, fibers for stacks and
+  coroutines, QPC time, binary file mode by default; platform.h gains
+  a portable VM interface used by guest_memory, lazy_mem, write_watch.
+- dispatch.cpp: vectored exception handler for guest faults; guest
+  exceptions rethrow through RedirectToCall.
+- Win32 HLE: host_compat.h for POSIX time/file calls, real
+  d3d11/dxgi with the SDL window's HWND, GetAdaptersAddresses for
+  the adapter list.
+- CMake: static libraries linked whole-archive on Windows,
+  _FILE_OFFSET_BITS=64 under MinGW, processor fallback for MSYS2
+  shells, roundeven shim for CORE-MATH.
+- tests: memory tests link the host platform file.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ CMakeLists.txt                              |  37 +++-
+ cmake/coremath.cmake                        |   3 +
+ cmake/coremath_roundeven.c                  |  15 ++
+ platforms/win32/CMakeLists.txt              |   9 +
+ platforms/win32/src/win32/d3d9_types.h      |   2 +
+ platforms/win32/src/win32/ddraw_types.h     |   2 +
+ platforms/win32/src/win32/dxgi.cpp          |   2 +-
+ platforms/win32/src/win32/dxvk.cpp          |  18 +-
+ platforms/win32/src/win32/dxvk.h            |   2 +
+ platforms/win32/src/win32/host_compat.h     |  60 ++++++
+ platforms/win32/src/win32/iphlpapi.cpp      |  44 +++++
+ platforms/win32/src/win32/kernel32.cpp      |   4 +-
+ platforms/win32/src/win32/kernel32_misc.cpp |   2 +-
+ platforms/win32/src/win32/kernel32_sync.cpp |  24 +++
+ platforms/win32/src/win32/ucrt.cpp          |   2 +
+ platforms/win32/src/win32/ucrt_time.cpp     |   2 +-
+ platforms/win32/src/win32/ws2_32.cpp        |   3 +
+ src/runtime/guest_memory.cpp                |  31 ++-
+ src/runtime/lazy_mem.cpp                    |   4 +-
+ src/runtime/platform.cpp                    |  29 +++
+ src/runtime/platform.h                      |  43 +++-
+ src/runtime/platform_win.cpp                | 205 ++++++++++++++++++++
+ src/runtime/posix_win.h                     |  51 +++++
+ src/runtime/write_watch.cpp                 |  10 +-
+ src/x86/dispatch.cpp                        |  88 ++++++++-
+ src/x86/process.cpp                         |  21 +-
+ src/x86/watchdog.cpp                        |   8 +
+ tests/CMakeLists.txt                        |   3 +
+ 28 files changed, 672 insertions(+), 52 deletions(-)
+ create mode 100644 cmake/coremath_roundeven.c
+ create mode 100644 platforms/win32/src/win32/host_compat.h
+ create mode 100644 src/runtime/platform_win.cpp
+ create mode 100644 src/runtime/posix_win.h
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 7e237d1..731f708 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -10,6 +10,41 @@ project(SwARc LANGUAGES C CXX)
+ # the parts its program imports; see README.md.
+ 
+ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
++# MSYS2 shells drop PROCESSOR_ARCHITECTURE, which CMake reads on Windows.
++if(WIN32 AND NOT CMAKE_SYSTEM_PROCESSOR AND CMAKE_SIZEOF_VOID_P EQUAL 8)
++  set(CMAKE_SYSTEM_PROCESSOR AMD64)
++endif()
++# MinGW-w64's off_t, lseek and struct stat are 32-bit unless asked; game
++# archives pass 4 GB.
++if(MINGW)
++  add_compile_definitions(_FILE_OFFSET_BITS=64)
++endif()
++
++# Windows hosts (MinGW-w64 UCRT, clang): the runtime libraries are static.
++# A DLL cannot export its thread-locals, and the fault handler and HLE
++# share many. HLE handlers register themselves from static initialisers,
++# so programs take every runtime library whole (recomp_whole_archive).
++if(WIN32)
++  function(add_library name)
++    set(_args ${ARGN})
++    list(FIND _args SHARED _i)
++    if(NOT _i EQUAL -1)
++      list(REMOVE_AT _args ${_i})
++      list(INSERT _args ${_i} STATIC)
++      set_property(GLOBAL APPEND PROPERTY RECOMP_STATIC_LIBS ${name})
++    endif()
++    _add_library(${name} ${_args})
++  endfunction()
++endif()
++# recomp_whole_archive(<target>): on Windows, links every runtime library
++# into <target> whole, so no self-registering object is dropped.
++function(recomp_whole_archive target)
++  if(WIN32)
++    get_property(_libs GLOBAL PROPERTY RECOMP_STATIC_LIBS)
++    string(REPLACE ";" "," _list "${_libs}")
++    set_property(TARGET ${target} PROPERTY LINK_LIBRARY_OVERRIDE "WHOLE_ARCHIVE,${_list}")
++  endif()
++endfunction()
+ 
+ # For the helper functions below, which run in the game project's scope.
+ set(RECOMP_ROOT "${CMAKE_CURRENT_SOURCE_DIR}" CACHE INTERNAL "")
+@@ -232,7 +267,7 @@ add_library(recomp_base SHARED
+   src/runtime/guest_memory.cpp
+   src/runtime/guest_alloc.cpp
+   src/runtime/lazy_mem.cpp
+-  src/runtime/platform.cpp
++  $<IF:$<BOOL:${WIN32}>,src/runtime/platform_win.cpp,src/runtime/platform.cpp>
+   src/runtime/pacing.cpp
+   src/runtime/write_watch.cpp)
+ target_include_directories(recomp_base PUBLIC src)
+diff --git a/cmake/coremath.cmake b/cmake/coremath.cmake
+index b25df83..fd713a8 100644
+--- a/cmake/coremath.cmake
++++ b/cmake/coremath.cmake
+@@ -26,6 +26,9 @@ set(_coremath_sources "")
+ foreach(f IN LISTS COREMATH_FUNCTIONS)
+   list(APPEND _coremath_sources "${coremath_SOURCE_DIR}/src/${f}.c")
+ endforeach()
++if(MINGW)
++  list(APPEND _coremath_sources "${CMAKE_CURRENT_LIST_DIR}/coremath_roundeven.c")
++endif()
+ add_library(coremath STATIC ${_coremath_sources})
+ set_target_properties(coremath PROPERTIES C_STANDARD 11 POSITION_INDEPENDENT_CODE ON)
+ # Exactly as written: no contraction into FMA (the code calls fma itself).
+diff --git a/cmake/coremath_roundeven.c b/cmake/coremath_roundeven.c
+new file mode 100644
+index 0000000..4a95150
+--- /dev/null
++++ b/cmake/coremath_roundeven.c
+@@ -0,0 +1,15 @@
++/* roundeven/roundevenf for C libraries without them (MinGW-w64 UCRT):
++   round half to even, independent of the current rounding mode. */
++#include <math.h>
++
++double roundeven(double x) {
++  double r = round(x);
++  if (fabs(r - x) == 0.5) r = 2.0 * round(x * 0.5);
++  return r;
++}
++
++float roundevenf(float x) {
++  float r = roundf(x);
++  if (fabsf(r - x) == 0.5f) r = 2.0f * roundf(x * 0.5f);
++  return r;
++}
+diff --git a/platforms/win32/CMakeLists.txt b/platforms/win32/CMakeLists.txt
+index 2b1f913..1061471 100644
+--- a/platforms/win32/CMakeLists.txt
++++ b/platforms/win32/CMakeLists.txt
+@@ -21,6 +21,9 @@ target_link_libraries(recomp_lift PRIVATE recomp_pe)
+ # COM, and the window and event pump every graphics API presents through.
+ # HLE handlers register themselves from static initialisers, which run
+ # when their library is loaded.
++# Host differences (src/win32/host_compat.h) for every file here.
++add_compile_options(-include "${CMAKE_CURRENT_SOURCE_DIR}/src/win32/host_compat.h")
++
+ add_library(recomp_win32 SHARED
+   src/win32/process.cpp
+   src/win32/hle.cpp
+@@ -222,6 +225,12 @@ if(FFXII_DXVK_NATIVE_DIR)
+   target_link_libraries(recomp_d3d11 PUBLIC "${RECOMP_DXVK_D3D11}")
+   target_link_libraries(recomp_dxgi PUBLIC "${RECOMP_DXVK_DXGI}")
+ endif()
++if(WIN32)
++  # Windows hosts: the system's Direct3D 11 and DXGI (no DXVK).
++  target_link_libraries(recomp_d3d11 PUBLIC d3d11 dxgi dxguid)
++  target_link_libraries(recomp_dxgi PUBLIC d3d11 dxgi dxguid)
++  target_link_libraries(recomp_win32 PUBLIC iphlpapi ws2_32)
++endif()
+ add_library(recomp_d3dcompiler SHARED src/win32/d3dcompiler.cpp src/win32/dxbc.cpp)
+ target_include_directories(recomp_d3dcompiler PUBLIC src)
+ target_link_libraries(recomp_d3dcompiler PUBLIC recomp_win32)
+diff --git a/platforms/win32/src/win32/d3d9_types.h b/platforms/win32/src/win32/d3d9_types.h
+index 010587e..ee02453 100644
+--- a/platforms/win32/src/win32/d3d9_types.h
++++ b/platforms/win32/src/win32/d3d9_types.h
+@@ -7,6 +7,8 @@
+ #include <cstddef>
+ #include <cstdint>
+ 
++#undef GPTR  // winbase.h's, on Windows hosts
++
+ #include "win32/ddraw_types.h"
+ 
+ namespace recomp::guest {
+diff --git a/platforms/win32/src/win32/ddraw_types.h b/platforms/win32/src/win32/ddraw_types.h
+index 7958676..bb9ec11 100644
+--- a/platforms/win32/src/win32/ddraw_types.h
++++ b/platforms/win32/src/win32/ddraw_types.h
+@@ -8,6 +8,8 @@
+ #include <cstddef>
+ #include <cstdint>
+ 
++#undef GPTR  // winbase.h's, on Windows hosts
++
+ namespace recomp::guest {
+ 
+ using DWORD = uint32_t;
+diff --git a/platforms/win32/src/win32/dxgi.cpp b/platforms/win32/src/win32/dxgi.cpp
+index 85cbead..63e4cfa 100644
+--- a/platforms/win32/src/win32/dxgi.cpp
++++ b/platforms/win32/src/win32/dxgi.cpp
+@@ -235,7 +235,7 @@ HLE_NAMED_X(kDll, "IDXGIFactory::EnumAdapters", DxgiFactoryEnumAdapters, kCdecl,
+ HLE_NAMED_X(kDll, "IDXGIFactory::MakeWindowAssociation", DxgiFactoryMakeWindowAssociation,
+             kCdecl, true) {
+   uint32_t hwnd = uint32_t(Arg(c, 1));
+-  HWND host = hwnd ? reinterpret_cast<HWND>(SdlWindowFor(hwnd)) : nullptr;
++  HWND host = HostSwapWindow(hwnd);
+   if (hwnd) RememberDxvkWindow(hwnd, host);
+   return uint32_t(DxvkHost<IDXGIFactory>(Arg(c, 0))->MakeWindowAssociation(
+       host, uint32_t(Arg(c, 2))));
+diff --git a/platforms/win32/src/win32/dxvk.cpp b/platforms/win32/src/win32/dxvk.cpp
+index 0e4aab1..4a808d4 100644
+--- a/platforms/win32/src/win32/dxvk.cpp
++++ b/platforms/win32/src/win32/dxvk.cpp
+@@ -109,6 +109,19 @@ GUID DxvkGuid(gaddr guest) {
+   return result;
+ }
+ 
++HWND HostSwapWindow(uint32_t hwnd) {
++  SDL_Window* window = hwnd ? SdlWindowFor(hwnd) : nullptr;
++  if (!window) return nullptr;
++#if defined(_WIN32)
++  // The system's DXGI presents to the SDL window's own Win32 window.
++  return static_cast<HWND>(SDL_GetPointerProperty(SDL_GetWindowProperties(window),
++                                                  SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
++#else
++  // DXVK native (DXVK_WSI_SDL3) takes the SDL_Window itself.
++  return reinterpret_cast<HWND>(window);
++#endif
++}
++
+ void RememberDxvkWindow(gaddr guest, HWND host) {
+   if (!host) return;
+   std::lock_guard<std::recursive_mutex> lock(Mu());
+@@ -125,9 +138,8 @@ bool GuestDxgiSwapChainDesc(gaddr guest, DXGI_SWAP_CHAIN_DESC* out) {
+   if (!guest || !out) return false;
+   std::memcpy(out, GPtr(guest), sizeof(*out));
+   uint32_t hwnd = uint32_t(Rd64(guest + 48));
+-  SDL_Window* window = SdlWindowFor(hwnd);
+-  if (!window) return false;
+-  out->OutputWindow = reinterpret_cast<HWND>(window);
++  out->OutputWindow = HostSwapWindow(hwnd);
++  if (!out->OutputWindow) return false;
+   RememberDxvkWindow(hwnd, out->OutputWindow);
+   return true;
+ }
+diff --git a/platforms/win32/src/win32/dxvk.h b/platforms/win32/src/win32/dxvk.h
+index 037c3ee..26c9dd4 100644
+--- a/platforms/win32/src/win32/dxvk.h
++++ b/platforms/win32/src/win32/dxvk.h
+@@ -41,6 +41,8 @@ T* DxvkHost(gaddr guest) {
+   return object ? reinterpret_cast<T*>(object->host) : nullptr;
+ }
+ 
++// The host window a swap chain presents to for guest window hwnd.
++HWND HostSwapWindow(uint32_t hwnd);
+ void RememberDxvkWindow(gaddr guest, HWND host);
+ gaddr GuestDxvkWindow(HWND host);
+ 
+diff --git a/platforms/win32/src/win32/host_compat.h b/platforms/win32/src/win32/host_compat.h
+new file mode 100644
+index 0000000..3a41f7d
+--- /dev/null
++++ b/platforms/win32/src/win32/host_compat.h
+@@ -0,0 +1,60 @@
++#pragma once
++// Host differences the Win32 HLE modules meet, force-included into every
++// file of platforms/win32 (CMakeLists.txt). POSIX hosts get the helpers
++// only; Windows hosts (MinGW-w64 UCRT) also get the POSIX calls the HLE
++// file and time code uses.
++
++#include <ctime>
++#include <string>
++
++#if defined(_WIN32)
++#include <direct.h>
++#include <fcntl.h>
++#include <io.h>
++#include <stdlib.h>
++#include <sys/stat.h>
++#include <sys/types.h>
++
++#ifndef O_CLOEXEC
++#define O_CLOEXEC 0
++#endif
++
++inline std::tm* localtime_r(const std::time_t* t, std::tm* out) {
++  return localtime_s(out, t) == 0 ? out : nullptr;
++}
++inline std::tm* gmtime_r(const std::time_t* t, std::tm* out) {
++  return gmtime_s(out, t) == 0 ? out : nullptr;
++}
++inline std::time_t timegm(std::tm* t) { return _mkgmtime(t); }
++inline int fsync(int fd) { return _commit(fd); }
++inline int mkdir(const char* path, int /*mode*/) { return _mkdir(path); }
++inline int setenv(const char* name, const char* value, int overwrite) {
++  if (!overwrite && std::getenv(name)) return 0;
++  return _putenv_s(name, value);
++}
++inline int unsetenv(const char* name) { return _putenv_s(name, ""); }
++#endif
++
++namespace recomp::host {
++
++// Seconds east of UTC for the broken-down local time t (tm_gmtoff).
++inline long GmtOff(const std::tm& t) {
++#if defined(_WIN32)
++  std::tm a = t, b = t;
++  b.tm_isdst = t.tm_isdst;
++  return long(_mkgmtime(&a) - std::mktime(&b));
++#else
++  return t.tm_gmtoff;
++#endif
++}
++
++// The time zone's abbreviation for t (tm_zone), or nullptr.
++inline const char* ZoneName(const std::tm& t) {
++#if defined(_WIN32)
++  return _tzname[t.tm_isdst > 0 ? 1 : 0];
++#else
++  return t.tm_zone;
++#endif
++}
++
++}  // namespace recomp::host
+diff --git a/platforms/win32/src/win32/iphlpapi.cpp b/platforms/win32/src/win32/iphlpapi.cpp
+index b47254d..676b825 100644
+--- a/platforms/win32/src/win32/iphlpapi.cpp
++++ b/platforms/win32/src/win32/iphlpapi.cpp
+@@ -1,6 +1,11 @@
+ // iphlpapi's GetAdaptersInfo, from the host's network interfaces, and
+ // dwmapi's DwmIsCompositionEnabled.
+ 
++#if defined(_WIN32)
++#include <winsock2.h>
++#include <iphlpapi.h>
++#include <ws2tcpip.h>
++#else
+ #include <ifaddrs.h>
+ #include <net/if.h>
+ #include <net/if_arp.h>
+@@ -8,7 +13,9 @@
+ #include <netpacket/packet.h>
+ #include <sys/socket.h>
+ #include <sys/stat.h>
++#endif
+ 
++#include <algorithm>
+ #include <cstdio>
+ #include <cstring>
+ #include <string>
+@@ -32,6 +39,42 @@ struct Adapter {
+ 
+ // The host's Ethernet-like interfaces that have a hardware address
+ // (loopback and tunnels have none), in interface-index order.
++#if defined(_WIN32)
++std::vector<Adapter> HostAdapters() {
++  std::vector<Adapter> out;
++  ULONG size = 16 << 10;
++  std::vector<uint8_t> buf(size);
++  auto* list = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buf.data());
++  ULONG r = GetAdaptersAddresses(AF_INET, GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST |
++                                     GAA_FLAG_SKIP_DNS_SERVER, nullptr, list, &size);
++  if (r == ERROR_BUFFER_OVERFLOW) {
++    buf.resize(size);
++    list = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buf.data());
++    r = GetAdaptersAddresses(AF_INET, GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST |
++                                 GAA_FLAG_SKIP_DNS_SERVER, nullptr, list, &size);
++  }
++  if (r != NO_ERROR) return out;
++  for (auto* i = list; i; i = i->Next) {
++    if (i->PhysicalAddressLength != 6 || i->IfType == IF_TYPE_SOFTWARE_LOOPBACK) continue;
++    if (i->IfType != IF_TYPE_ETHERNET_CSMACD && i->IfType != IF_TYPE_IEEE80211) continue;
++    Adapter a;
++    a.name = i->AdapterName;
++    a.index = i->IfIndex;
++    std::memcpy(a.mac, i->PhysicalAddress, 6);
++    a.wireless = i->IfType == IF_TYPE_IEEE80211;
++    for (auto* u = i->FirstUnicastAddress; u; u = u->Next) {
++      if (u->Address.lpSockaddr->sa_family != AF_INET) continue;
++      a.ip = reinterpret_cast<const sockaddr_in*>(u->Address.lpSockaddr)->sin_addr.s_addr;
++      const uint8_t bits = u->OnLinkPrefixLength;
++      a.mask = bits ? htonl(uint32_t(0xFFFFFFFFull << (32 - bits))) : 0;
++      break;
++    }
++    out.push_back(a);
++  }
++  std::sort(out.begin(), out.end(), [](const Adapter& x, const Adapter& y) { return x.index < y.index; });
++  return out;
++}
++#else
+ std::vector<Adapter> HostAdapters() {
+   std::vector<Adapter> out;
+   ifaddrs* list = nullptr;
+@@ -65,6 +108,7 @@ std::vector<Adapter> HostAdapters() {
+   freeifaddrs(list);
+   return out;
+ }
++#endif
+ 
+ std::string Dotted(uint32_t net_order) {
+   const uint8_t* b = reinterpret_cast<const uint8_t*>(&net_order);
+diff --git a/platforms/win32/src/win32/kernel32.cpp b/platforms/win32/src/win32/kernel32.cpp
+index 9650a81..5399607 100644
+--- a/platforms/win32/src/win32/kernel32.cpp
++++ b/platforms/win32/src/win32/kernel32.cpp
+@@ -1274,8 +1274,8 @@ HLE("kernel32.dll", GetTimeZoneInformation, 1) {
+   std::tm t{};
+   localtime_r(&now, &t);
+   std::memset(GPtr(tzi), 0, 172);
+-  Wr32(tzi + 0, uint32_t(int32_t(-t.tm_gmtoff / 60)));  // Bias, minutes
+-  std::u16string name = Widen(t.tm_zone ? t.tm_zone : "UTC").substr(0, 31);
++  Wr32(tzi + 0, uint32_t(int32_t(-recomp::host::GmtOff(t) / 60)));  // Bias, minutes
++  std::u16string name = Widen(recomp::host::ZoneName(t) ? recomp::host::ZoneName(t) : "UTC").substr(0, 31);
+   std::memcpy(GPtr(tzi + 4), name.data(), name.size() * 2);    // StandardName
+   std::memcpy(GPtr(tzi + 88), name.data(), name.size() * 2);   // DaylightName
+   return 0;
+diff --git a/platforms/win32/src/win32/kernel32_misc.cpp b/platforms/win32/src/win32/kernel32_misc.cpp
+index 2c9ea09..a24fc65 100644
+--- a/platforms/win32/src/win32/kernel32_misc.cpp
++++ b/platforms/win32/src/win32/kernel32_misc.cpp
+@@ -241,7 +241,7 @@ HLE64("kernel32.dll", FileTimeToLocalFileTime, 2) {
+   time_t now = time(nullptr);
+   std::tm lt{};
+   localtime_r(&now, &lt);
+-  int64_t off = int64_t(lt.tm_gmtoff) * 10000000;
++  int64_t off = int64_t(recomp::host::GmtOff(lt)) * 10000000;
+   Wr64(Arg(c, 1), uint64_t(int64_t(Rd64(Arg(c, 0))) + off));
+   return 1;
+ }
+diff --git a/platforms/win32/src/win32/kernel32_sync.cpp b/platforms/win32/src/win32/kernel32_sync.cpp
+index 752201c..ce58be9 100644
+--- a/platforms/win32/src/win32/kernel32_sync.cpp
++++ b/platforms/win32/src/win32/kernel32_sync.cpp
+@@ -12,7 +12,9 @@
+ // synchronises opens a GuestSyncPoint, which makes the call a full
+ // barrier as on Windows (see kernel32_state.h).
+ 
++#if !defined(_WIN32)
+ #include <sys/mman.h>
++#endif
+ #include <sys/stat.h>
+ #include <unistd.h>
+ 
+@@ -794,6 +796,27 @@ uint32_t MapView(uint32_t h, uint32_t access, uint32_t off_hi, uint32_t off_lo,
+   bool write = (access & 0x2) && m->writable;  // FILE_MAP_WRITE
+   // Copy-on-write (FILE_MAP_COPY) and read views are private; write views
+   // are shared with the file.
++#if defined(_WIN32)
++  // Windows hosts: the arena is one reservation, which a file view cannot
++  // be placed into, so views are copies. Shared write views (writes that
++  // reach the file) are not supported there yet.
++  if (write) {
++    g_proc->vm.Release(base);
++    SetLastError(kErrorAccessDenied);
++    return 0;
++  }
++  g_proc->mem.Commit(base, size, Prot::R);
++  if (_lseeki64(m->fd, int64_t(off), SEEK_SET) < 0) {
++    g_proc->vm.Release(base);
++    SetLastError(kErrorAccessDenied);
++    return 0;
++  }
++  for (uint32_t done = 0; done < size;) {
++    const int n = _read(m->fd, static_cast<uint8_t*>(GPtr(base)) + done, size - done);
++    if (n <= 0) break;  // past the end of the file: the rest reads zero
++    done += uint32_t(n);
++  }
++#else
+   int flags = MAP_FIXED | (write ? MAP_SHARED : MAP_PRIVATE);
+   void* p = mmap(GPtr(base), size, PROT_READ | PROT_WRITE, flags, m->fd, off_t(off));
+   if (p == MAP_FAILED) {
+@@ -804,6 +827,7 @@ uint32_t MapView(uint32_t h, uint32_t access, uint32_t off_hi, uint32_t off_lo,
+   // Tell the page table these guest pages are committed (the host pages
+   // are already accessible through the file mapping).
+   g_proc->mem.Commit(base, size, write ? Prot::RW : Prot::R);
++#endif
+   std::lock_guard<std::mutex> l(g_views_mu);
+   g_views.insert(base);
+   return base;
+diff --git a/platforms/win32/src/win32/ucrt.cpp b/platforms/win32/src/win32/ucrt.cpp
+index 27dc69d..5c23025 100644
+--- a/platforms/win32/src/win32/ucrt.cpp
++++ b/platforms/win32/src/win32/ucrt.cpp
+@@ -11,6 +11,8 @@
+ #include <cstring>
+ #include <mutex>
+ #include <string>
++
++#undef environ  // the host CRT's macro, on Windows hosts
+ #include <tuple>
+ #include <unordered_map>
+ #include <utility>
+diff --git a/platforms/win32/src/win32/ucrt_time.cpp b/platforms/win32/src/win32/ucrt_time.cpp
+index a34c2f1..c4b83bf 100644
+--- a/platforms/win32/src/win32/ucrt_time.cpp
++++ b/platforms/win32/src/win32/ucrt_time.cpp
+@@ -34,7 +34,7 @@ int64_t LocalOffset() {
+   std::time_t now = std::time(nullptr);
+   std::tm t{};
+   localtime_r(&now, &t);
+-  return t.tm_gmtoff;
++  return recomp::host::GmtOff(t);
+ }
+ 
+ void PutTm(gaddr p, const std::tm& t) {
+diff --git a/platforms/win32/src/win32/ws2_32.cpp b/platforms/win32/src/win32/ws2_32.cpp
+index 3e3ae1f..9b65ebb 100644
+--- a/platforms/win32/src/win32/ws2_32.cpp
++++ b/platforms/win32/src/win32/ws2_32.cpp
+@@ -3,6 +3,8 @@
+ // values differ, and BSD's have a length byte). Imported by ordinal or by
+ // name, so each function is registered under both.
+ 
++// Windows hosts: not built yet (no game on them imports ws2_32).
++#if !defined(_WIN32)  // whole file
+ #include <arpa/inet.h>
+ #include <fcntl.h>
+ #include <netinet/in.h>
+@@ -280,3 +282,4 @@ HLE64("ws2_32.dll", inet_ntop, 4) {
+ }
+ 
+ }  // namespace recomp::hle
++#endif  // !_WIN32
+diff --git a/src/runtime/guest_memory.cpp b/src/runtime/guest_memory.cpp
+index 6790917..9669bdd 100644
+--- a/src/runtime/guest_memory.cpp
++++ b/src/runtime/guest_memory.cpp
+@@ -1,10 +1,10 @@
+ #include "runtime/guest_memory.h"
+ 
+-#include <sys/mman.h>
+-#include <unistd.h>
+ 
+ #include <cstdio>
++#include <cstring>
+ 
++#include "runtime/platform.h"
+ #include "runtime/write_watch.h"
+ 
+ namespace recomp {
+@@ -19,12 +19,10 @@ constexpr uintptr_t kPreferredBase = 0x1000000000ull;
+ // Larger arenas (x64 guests) and their guard go above that.
+ constexpr uintptr_t kPreferredBaseLarge = 0x20000000000ull;
+ 
+-constexpr int kReserveFlags = MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE;
+-
+ }  // namespace
+ 
+ bool GuestMemory::Reserve(unsigned bits) {
+-  host_page_ = static_cast<size_t>(sysconf(_SC_PAGESIZE));
++  host_page_ = platform::PageSize();
+   if (host_page_ < kPageSize || host_page_ % kPageSize) {
+     std::fprintf(stderr, "GuestMemory: unsupported host page size %zu\n",
+                  host_page_);
+@@ -34,16 +32,10 @@ bool GuestMemory::Reserve(unsigned bits) {
+   const uint64_t size = 1ull << bits;
+   const uint64_t span = bits > 32 ? 2 * size : size;  // with the guard
+   void* hint = reinterpret_cast<void*>(bits > 32 ? kPreferredBaseLarge : kPreferredBase);
+-#ifdef MAP_FIXED_NOREPLACE
+-  void* p = mmap(hint, span, PROT_NONE, kReserveFlags | MAP_FIXED_NOREPLACE,
+-                 -1, 0);
+-  if (p == MAP_FAILED) p = mmap(nullptr, span, PROT_NONE, kReserveFlags, -1, 0);
+-#else
+-  // Without MAP_FIXED_NOREPLACE the hint is advisory; take what we get.
+-  void* p = mmap(hint, span, PROT_NONE, kReserveFlags, -1, 0);
+-#endif
+-  if (p == MAP_FAILED) {
+-    std::perror("GuestMemory::Reserve mmap");
++  void* p = platform::VmReserve(hint, span);
++  if (!p) {
++    std::fprintf(stderr, "GuestMemory::Reserve: cannot reserve %llu bytes\n",
++                 (unsigned long long)span);
+     return false;
+   }
+   base_ = static_cast<uint8_t*>(p);
+@@ -73,8 +65,8 @@ bool GuestMemory::Commit(gaddr va, uint64_t size, Prot prot) {
+   HostRange(va, size, &s, &e);
+   // Host pages are only ever "accessible" or not; guest protection is
+   // bookkeeping. Fresh anonymous pages are zero, matching VirtualAlloc.
+-  if (mprotect(base_ + s, e - s, PROT_READ | PROT_WRITE) != 0) {
+-    std::perror("GuestMemory::Commit mprotect");
++  if (!platform::VmSetAccess(base_ + s, e - s, platform::Access::ReadWrite)) {
++    std::fprintf(stderr, "GuestMemory::Commit: cannot map guest %llX\n", (unsigned long long)va);
+     return false;
+   }
+   uint64_t first = va / kPageSize, last = (uint64_t(va) + size - 1) / kPageSize;
+@@ -103,13 +95,12 @@ void GuestMemory::Decommit(gaddr va, uint64_t size, bool zero) {
+       std::memset(base_ + g * kPageSize, 0, kPageSize);  // reads back as zero
+     pages_[g] = 0;
+   }
+-  // Return host pages no committed guest page still uses. Remapping (not
+-  // madvise) is used because MADV_DONTNEED does not zero on macOS.
++  // Return host pages no committed guest page still uses.
+   uint64_t s, e;
+   HostRange(va, size, &s, &e);
+   for (uint64_t h = s; h < e; h += host_page_) {
+     if (HostPageInUse(h)) continue;
+-    mmap(base_ + h, host_page_, PROT_NONE, kReserveFlags | MAP_FIXED, -1, 0);
++    platform::VmDiscard(base_ + h, host_page_);
+   }
+ }
+ 
+diff --git a/src/runtime/lazy_mem.cpp b/src/runtime/lazy_mem.cpp
+index f13fe7a..ba46989 100644
+--- a/src/runtime/lazy_mem.cpp
++++ b/src/runtime/lazy_mem.cpp
+@@ -1,6 +1,6 @@
+ #include "runtime/lazy_mem.h"
+ 
+-#include <sys/mman.h>
++#include "runtime/platform.h"
+ 
+ #include <algorithm>
+ #include <atomic>
+@@ -42,7 +42,7 @@ Region::~Region() = default;
+ 
+ void Region::SetAccess(gaddr lo, gaddr hi, bool accessible) {
+   if (hi <= lo) return;
+-  if (mprotect(mem_.ptr(lo), hi - lo, accessible ? PROT_READ | PROT_WRITE : PROT_NONE)) {
++  if (!platform::VmSetAccess(mem_.ptr(lo), hi - lo, accessible ? platform::Access::ReadWrite : platform::Access::None)) {
+     std::perror("lazy::Region mprotect");
+     std::abort();
+   }
+diff --git a/src/runtime/platform.cpp b/src/runtime/platform.cpp
+index 9e138ab..c2b7aeb 100644
+--- a/src/runtime/platform.cpp
++++ b/src/runtime/platform.cpp
+@@ -16,6 +16,8 @@
+ #include <signal.h>
+ #include <time.h>
+ #include <ucontext.h>
++#include <sys/mman.h>
++#include <unistd.h>
+ 
+ #if defined(__APPLE__)
+ #include <mach/mach.h>
+@@ -28,6 +30,33 @@
+ 
+ namespace recomp::platform {
+ 
++size_t PageSize() { return size_t(sysconf(_SC_PAGESIZE)); }
++
++void* VmReserve(void* hint, size_t size) {
++  constexpr int kFlags = MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE;
++  void* p = MAP_FAILED;
++#ifdef MAP_FIXED_NOREPLACE
++  if (hint) p = mmap(hint, size, PROT_NONE, kFlags | MAP_FIXED_NOREPLACE, -1, 0);
++  if (p == MAP_FAILED) p = mmap(nullptr, size, PROT_NONE, kFlags, -1, 0);
++#else
++  // Without MAP_FIXED_NOREPLACE the hint is advisory; take what we get.
++  p = mmap(hint, size, PROT_NONE, kFlags, -1, 0);
++#endif
++  return p == MAP_FAILED ? nullptr : p;
++}
++
++bool VmSetAccess(void* p, size_t size, Access a) {
++  const int prot = a == Access::ReadWrite ? PROT_READ | PROT_WRITE
++                   : a == Access::Read    ? PROT_READ
++                                          : PROT_NONE;
++  return mprotect(p, size, prot) == 0;
++}
++
++void VmDiscard(void* p, size_t size) {
++  // Remapping (not madvise): MADV_DONTNEED does not zero on macOS.
++  mmap(p, size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED, -1, 0);
++}
++
+ namespace {
+ ucontext_t g_caller_ctx, g_stack_ctx;
+ }
+diff --git a/src/runtime/platform.h b/src/runtime/platform.h
+index 101eff8..7bb1273 100644
+--- a/src/runtime/platform.h
++++ b/src/runtime/platform.h
+@@ -6,24 +6,30 @@
+ // no #ifdef __linux__ / __APPLE__.
+ 
+ #include <sys/stat.h>
++#include <time.h>
+ 
+ #include <cfenv>
+ #include <cstddef>
+ #include <cstdint>
++#include <string>
+ #include <ctime>
+ 
+ namespace recomp::platform {
+ 
+ // ---- files
+ inline timespec StatAccessTime(const struct stat& st) {
+-#if defined(__APPLE__)
++#if defined(_WIN32)
++  return timespec{time_t(st.st_atime), 0};
++#elif defined(__APPLE__)
+   return st.st_atimespec;
+ #else
+   return st.st_atim;
+ #endif
+ }
+ inline timespec StatModifyTime(const struct stat& st) {
+-#if defined(__APPLE__)
++#if defined(_WIN32)
++  return timespec{time_t(st.st_mtime), 0};
++#elif defined(__APPLE__)
+   return st.st_mtimespec;
+ #else
+   return st.st_mtim;
+@@ -31,12 +37,22 @@ inline timespec StatModifyTime(const struct stat& st) {
+ }
+ 
+ // Per-user data under $HOME (without XDG_DATA_HOME), with a trailing '/'.
+-#if defined(__APPLE__)
++// Windows has no $HOME convention here: builds there are portable and keep
++// their data next to the exe (process.cpp).
++#if defined(_WIN32)
++inline constexpr const char* kUserDataDir = "/";
++#elif defined(__APPLE__)
+ inline constexpr const char* kUserDataDir = "/Library/Application Support/";
+ #else
+ inline constexpr const char* kUserDataDir = "/.local/share/";
+ #endif
+ 
++#if defined(_WIN32)
++// The directory of the running executable, with '/' separators and no
++// trailing one (portable builds keep their data there).
++std::string ExeDir();
++#endif
++
+ // ---- floating point
+ // Why this thread's floating-point environment is not the default one the
+ // x87 model's host-double paths rely on (round to nearest, no flush-to-
+@@ -46,7 +62,9 @@ inline const char* HostFpProblem() {
+   if (std::fegetround() != FE_TONEAREST) return "rounding mode is not to nearest";
+   std::fenv_t env;
+   if (std::fegetenv(&env)) return "fegetenv failed";
+-#if defined(__x86_64__)
++#if defined(_WIN32) && defined(__x86_64__)
++  if ((__builtin_ia32_stmxcsr() & 0xFFC0u) != 0x1F80u) return "MXCSR is not the default";
++#elif defined(__x86_64__)
+   // FTZ (15), RC (13-14), the exception masks (7-12, all set), DAZ (6).
+   if ((env.__mxcsr & 0xFFC0u) != 0x1F80u) return "MXCSR is not the default";
+ #elif defined(__aarch64__)
+@@ -62,6 +80,18 @@ inline const char* HostFpProblem() {
+   return nullptr;
+ }
+ 
++// ---- virtual memory (mmap/mprotect on POSIX, VirtualAlloc on Windows)
++size_t PageSize();
++// Reserves [hint or anywhere, + size), inaccessible. nullptr on failure.
++void* VmReserve(void* hint, size_t size);
++// Sets reserved pages' access, keeping their contents (fresh pages read
++// zero).
++enum class Access { None, Read, ReadWrite };
++bool VmSetAccess(void* p, size_t size, Access a);
++// Returns the pages to the reservation: inaccessible, zero when made
++// accessible again.
++void VmDiscard(void* p, size_t size);
++
+ // ---- time
+ // The host's monotonic clock in nanoseconds (not a guest tick counter).
+ uint64_t MonotonicNs();
+@@ -91,7 +121,8 @@ Coroutine* ThreadCoroutine();
+ void SwitchCoroutine(Coroutine* from, Coroutine* to);
+ void FreeCoroutine(Coroutine* c);
+ 
+-// ---- faults (SIGSEGV/SIGBUS handlers; `uc` is the handler's ucontext)
++// ---- faults (SIGSEGV/SIGBUS handlers; `uc` is the handler's ucontext;
++// on Windows, the vectored exception handler's EXCEPTION_POINTERS)
+ struct FaultContext {
+   bool write_known = false;  // whether `write` comes from the CPU
+   bool write = false;
+@@ -106,7 +137,7 @@ FaultContext ReadFaultContext(const void* uc);
+ // Whether a C++ exception thrown inside a signal handler unwinds through
+ // the signal frame into the interrupted code. glibc's unwinder steps
+ // through the kernel's signal trampoline; Darwin's does not.
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(_WIN32)
+ inline constexpr bool kThrowThroughSignalFrames = false;
+ #else
+ inline constexpr bool kThrowThroughSignalFrames = true;
+diff --git a/src/runtime/platform_win.cpp b/src/runtime/platform_win.cpp
+new file mode 100644
+index 0000000..3cf072d
+--- /dev/null
++++ b/src/runtime/platform_win.cpp
+@@ -0,0 +1,205 @@
++// Host platform specifics for Windows (x86-64); see platform.h.
++// Faults arrive through a vectored exception handler (dispatch.cpp), so
++// `uc` here is the handler's EXCEPTION_POINTERS.
++
++#include "runtime/platform.h"
++
++#define WIN32_LEAN_AND_MEAN
++#include <windows.h>
++
++#include <fcntl.h>
++#include <stdlib.h>
++
++#include <cstdlib>
++
++namespace recomp::platform {
++
++namespace {
++// The CRT opens files in text mode by default, which would translate line
++// ends in every game file: make binary the default for open() and fopen().
++const int kBinaryFiles = (_set_fmode(_O_BINARY), 0);
++}  // namespace
++
++size_t PageSize() {
++  SYSTEM_INFO si;
++  GetSystemInfo(&si);
++  return si.dwPageSize;
++}
++
++void* VmReserve(void* hint, size_t size) {
++  void* p = hint ? VirtualAlloc(hint, size, MEM_RESERVE, PAGE_NOACCESS) : nullptr;
++  if (!p) p = VirtualAlloc(nullptr, size, MEM_RESERVE, PAGE_NOACCESS);
++  return p;
++}
++
++bool VmSetAccess(void* p, size_t size, Access a) {
++  // Committing pages already committed keeps their contents and only sets
++  // the protection; fresh commits read zero. Inaccessible pages stay
++  // committed so their contents survive (write watches, lazy regions).
++  const DWORD prot = a == Access::ReadWrite ? PAGE_READWRITE
++                     : a == Access::Read    ? PAGE_READONLY
++                                            : PAGE_NOACCESS;
++  return VirtualAlloc(p, size, MEM_COMMIT, prot) != nullptr;
++}
++
++void VmDiscard(void* p, size_t size) { VirtualFree(p, size, MEM_DECOMMIT); }
++
++std::string ExeDir() {
++  wchar_t w[MAX_PATH * 2];
++  const DWORD n = GetModuleFileNameW(nullptr, w, DWORD(sizeof w / sizeof w[0]));
++  char u[MAX_PATH * 6];
++  const int m = WideCharToMultiByte(CP_UTF8, 0, w, int(n), u, int(sizeof u), nullptr, nullptr);
++  std::string s(u, size_t(m > 0 ? m : 0));
++  for (char& ch : s)
++    if (ch == '\\') ch = '/';
++  const size_t slash = s.rfind('/');
++  return slash == std::string::npos ? "." : s.substr(0, slash);
++}
++
++// ---- time
++
++uint64_t MonotonicNs() {
++  static const uint64_t freq = [] {
++    LARGE_INTEGER f;
++    QueryPerformanceFrequency(&f);
++    return uint64_t(f.QuadPart);
++  }();
++  LARGE_INTEGER c;
++  QueryPerformanceCounter(&c);
++  const uint64_t t = uint64_t(c.QuadPart);
++  return t / freq * 1000000000ull + t % freq * 1000000000ull / freq;
++}
++
++void SleepUntilNs(uint64_t t) {
++  // A high-resolution waitable timer wakes within about 0.5 ms; the rest
++  // is a short spin with yields.
++  static thread_local HANDLE timer =
++      CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
++                             TIMER_ALL_ACCESS);
++  for (;;) {
++    const uint64_t now = MonotonicNs();
++    if (now >= t) return;
++    const uint64_t left = t - now;
++    if (left > 600000 && timer) {
++      LARGE_INTEGER due;
++      due.QuadPart = -int64_t((left - 500000) / 100);  // relative, 100 ns units
++      if (SetWaitableTimerEx(timer, &due, 0, nullptr, nullptr, nullptr, 0)) {
++        WaitForSingleObject(timer, INFINITE);
++        continue;
++      }
++    }
++    if (left > 600000) {
++      Sleep(DWORD(left / 1000000));
++      continue;
++    }
++    SwitchToThread();
++  }
++}
++
++// ---- stacks
++// Fibers bring stacks of their own (the TEB's stack bounds then match,
++// which SEH unwinding checks), so the caller's stack is not used.
++
++namespace {
++void (*t_stack_fn)() = nullptr;
++void* t_caller_fiber = nullptr;
++
++void WINAPI StackFiber(void*) {
++  t_stack_fn();
++  SwitchToFiber(t_caller_fiber);
++}
++}  // namespace
++
++void RunOnStack(void* stack, size_t size, void (*fn)()) {
++  (void)stack;
++  const bool was_fiber = IsThreadAFiber();
++  t_caller_fiber = was_fiber ? GetCurrentFiber() : ConvertThreadToFiber(nullptr);
++  if (!t_caller_fiber) std::abort();
++  t_stack_fn = fn;
++  void* f = CreateFiberEx(64 << 10, size, FIBER_FLAG_FLOAT_SWITCH, StackFiber, nullptr);
++  if (!f) std::abort();
++  SwitchToFiber(f);
++  DeleteFiber(f);
++  if (!was_fiber) ConvertFiberToThread();
++}
++
++struct Coroutine {
++  void* fiber = nullptr;
++  void (*fn)(void*) = nullptr;
++  void* arg = nullptr;
++  bool thread_own = false;
++};
++
++namespace {
++void WINAPI CoroutineStart(void* p) {
++  auto* c = static_cast<Coroutine*>(p);
++  c->fn(c->arg);
++  std::abort();  // fn must not return
++}
++}  // namespace
++
++Coroutine* NewCoroutine(void* stack, size_t size, void (*fn)(void*), void* arg) {
++  (void)stack;
++  auto* c = new Coroutine;
++  c->fn = fn;
++  c->arg = arg;
++  c->fiber = CreateFiberEx(64 << 10, size, FIBER_FLAG_FLOAT_SWITCH, CoroutineStart, c);
++  if (!c->fiber) std::abort();
++  return c;
++}
++
++Coroutine* ThreadCoroutine() {
++  auto* c = new Coroutine;
++  c->thread_own = true;
++  c->fiber = IsThreadAFiber() ? GetCurrentFiber() : ConvertThreadToFiber(nullptr);
++  return c;
++}
++
++void SwitchCoroutine(Coroutine* from, Coroutine* to) {
++  (void)from;
++  SwitchToFiber(to->fiber);
++}
++
++void FreeCoroutine(Coroutine* c) {
++  if (!c->thread_own && c->fiber) DeleteFiber(c->fiber);
++  delete c;
++}
++
++// ---- faults
++
++FaultContext ReadFaultContext(const void* uc) {
++  FaultContext f;
++  const auto* ep = static_cast<const EXCEPTION_POINTERS*>(uc);
++  const EXCEPTION_RECORD* er = ep->ExceptionRecord;
++  const CONTEXT* cx = ep->ContextRecord;
++  if (er->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && er->NumberParameters >= 2) {
++    f.write_known = true;
++    f.write = er->ExceptionInformation[0] == 1;  // 0 read, 1 write, 8 execute
++  }
++  f.pc = uintptr_t(cx->Rip);
++  f.caller = *reinterpret_cast<const uintptr_t*>(cx->Rsp);
++  return f;
++}
++
++namespace {
++thread_local void (*t_redirected)() = nullptr;
++
++[[noreturn]] __attribute__((force_align_arg_pointer, noinline)) void CallRedirected() {
++  void (*fn)() = t_redirected;
++  t_redirected = nullptr;
++  fn();
++  std::abort();  // fn must not return
++}
++}  // namespace
++
++bool RedirectToCall(void* uc, void (*fn)()) {
++  CONTEXT* cx = static_cast<EXCEPTION_POINTERS*>(uc)->ContextRecord;
++  // A call's push. Windows x64 has no red zone, so nothing lives there.
++  cx->Rsp -= 8;
++  *reinterpret_cast<uint64_t*>(cx->Rsp) = cx->Rip + 1;
++  cx->Rip = reinterpret_cast<uintptr_t>(&CallRedirected);
++  t_redirected = fn;
++  return true;
++}
++
++}  // namespace recomp::platform
+diff --git a/src/runtime/posix_win.h b/src/runtime/posix_win.h
+new file mode 100644
+index 0000000..dcc48e8
+--- /dev/null
++++ b/src/runtime/posix_win.h
+@@ -0,0 +1,51 @@
++#pragma once
++// The few POSIX pieces the runtime's diagnostics use, for Windows hosts
++// (MinGW-w64 UCRT). Included in place of <execinfo.h>; the fault handler
++// itself is Windows code (dispatch.cpp), not an emulation of signals.
++#if defined(_WIN32)
++
++#define WIN32_LEAN_AND_MEAN
++#include <windows.h>
++#include <psapi.h>
++
++#include <fcntl.h>
++#include <io.h>
++#include <cstdio>
++
++#ifndef O_CLOEXEC
++#define O_CLOEXEC 0
++#endif
++
++// The watchdog's per-thread stack dumps need a signal Windows lacks;
++// pthread_kill with it fails, so those threads read "(thread gone)".
++#ifndef SIGUSR2
++#define SIGUSR2 31
++#endif
++
++inline int backtrace(void** frames, int max) {
++  return int(RtlCaptureStackBackTrace(1, DWORD(max), frames, nullptr));
++}
++
++// module+offset per frame (no symbol tables in release builds).
++inline void backtrace_symbols_fd(void* const* frames, int n, int fd) {
++  for (int i = 0; i < n; i++) {
++    HMODULE m = nullptr;
++    char name[MAX_PATH] = "?";
++    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
++                               GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
++                           static_cast<const char*>(frames[i]), &m) &&
++        m)
++      GetModuleFileNameA(m, name, sizeof name);
++    const char* base = name;
++    for (const char* p = name; *p; p++)
++      if (*p == '\\' || *p == '/') base = p + 1;
++    char line[MAX_PATH + 64];
++    const int len = std::snprintf(line, sizeof line, "%s+0x%llx [%p]\n", base,
++                                  (unsigned long long)(static_cast<const char*>(frames[i]) -
++                                                       reinterpret_cast<const char*>(m)),
++                                  frames[i]);
++    if (len > 0) (void)!_write(fd, line, unsigned(len));
++  }
++}
++
++#endif
+diff --git a/src/runtime/write_watch.cpp b/src/runtime/write_watch.cpp
+index 1963afd..21fd941 100644
+--- a/src/runtime/write_watch.cpp
++++ b/src/runtime/write_watch.cpp
+@@ -1,6 +1,6 @@
+ #include "runtime/write_watch.h"
+ 
+-#include <sys/mman.h>
++#include "runtime/platform.h"
+ 
+ #include <algorithm>
+ #include <cstdio>
+@@ -15,8 +15,8 @@ struct Registry {
+   std::vector<Watch*> armed;   // under mu
+   std::atomic<size_t> count{0};  // armed.size(), read without the lock
+ 
+-  static void Protect(const Watch* w, int prot) {
+-    if (mprotect(w->mem_->base() + w->lo_, w->hi_ - w->lo_, prot)) {
++  static void Protect(const Watch* w, platform::Access a) {
++    if (!platform::VmSetAccess(w->mem_->base() + w->lo_, w->hi_ - w->lo_, a)) {
+       std::perror("watch mprotect");
+       std::abort();
+     }
+@@ -61,7 +61,7 @@ struct Registry {
+       Watch* w = stack;
+       stack = w->next_;
+       take(w->lo_, w->hi_);  // read as written before their pages open
+-      Protect(w, PROT_READ | PROT_WRITE);
++      Protect(w, platform::Access::ReadWrite);
+     }
+     return any;
+   }
+@@ -104,7 +104,7 @@ void Watch::Arm(GuestMemory& mem, gaddr va, uint64_t size) {
+   R().armed.push_back(this);
+   R().count.store(R().armed.size());
+   armed_.store(true, std::memory_order_release);
+-  Registry::Protect(this, PROT_READ);
++  Registry::Protect(this, platform::Access::Read);
+ }
+ 
+ void Watch::Disarm() {
+diff --git a/src/x86/dispatch.cpp b/src/x86/dispatch.cpp
+index 195ecc0..a90a82f 100644
+--- a/src/x86/dispatch.cpp
++++ b/src/x86/dispatch.cpp
+@@ -6,10 +6,14 @@
+ // addresses. Anything else is fatal: there is no interpreter fallback
+ // (CLAUDE.md).
+ 
++#ifdef _WIN32
++#include "runtime/posix_win.h"
++#else
+ #include <execinfo.h>
+-#include <pthread.h>
+ #include <sys/mman.h>
+ #include <signal.h>
++#endif
++#include <pthread.h>
+ #include <unistd.h>
+ 
+ #include <chrono>
+@@ -193,7 +197,9 @@ constexpr int kMaxFaultDepth = 8;
+ thread_local std::exception_ptr t_fault_exception;
+ 
+ // The SIGSEGV and SIGBUS actions installed before ours (InstallFaultHandler).
++#ifndef _WIN32
+ struct sigaction g_prev_segv, g_prev_bus;
++#endif
+ 
+ [[noreturn]] void RethrowFaultException() {
+   std::exception_ptr e = std::move(t_fault_exception);
+@@ -201,17 +207,18 @@ struct sigaction g_prev_segv, g_prev_bus;
+   std::rethrow_exception(e);
+ }
+ 
+-void FaultHandler(int sig, siginfo_t* si, void* uc) {
+-  char buf[256];
+-  uintptr_t a = reinterpret_cast<uintptr_t>(si->si_addr);
++// Offers a host fault at a to the write watches, the lazy regions and the
++// guest's own exception dispatch. True: handled, retry the instruction (or
++// uc now resumes in a rethrow). `uc`: the host's fault context.
++bool OfferFault(uintptr_t a, void* uc) {
+   uintptr_t base = reinterpret_cast<uintptr_t>(g_guest_base);
+   // x64 guests: no guest exception dispatch yet (ARCHITECTURE.md, "64-bit
+   // guests"), so their faults are reported below.
+   const bool guest32 = a - base < (1ull << 32) && g_proc && !g_proc->x64;
+   if (g_proc && a - base < g_proc->mem.size() && watch::HandleFault(a - base))
+-    return;  // a watched page, writable now: retry the write
++    return true;  // a watched page, writable now: retry the write
+   if (guest32 && lazy::HandleFault(uint32_t(a - base)))
+-    return;  // filled: retry the faulting instruction
++    return true;  // filled: retry the faulting instruction
+   // A watch another thread disarmed after this fault was raised: the page
+   // is writable now. A page that faults again and again is reported below
+   // instead (host protection the guest's does not explain).
+@@ -220,7 +227,7 @@ void FaultHandler(int sig, siginfo_t* si, void* uc) {
+   if (g_proc && a - base < g_proc->mem.size() && watch::Reopened(g_proc->mem, a - base)) {
+     t_reopened_n = a == t_reopened_at ? t_reopened_n + 1 : 1;
+     t_reopened_at = a;
+-    if (t_reopened_n <= 16) return;
++    if (t_reopened_n <= 16) return true;
+   }
+   platform::FaultContext fc = platform::ReadFaultContext(uc);
+   // A host that cannot tell a write from a read gets no guest exception:
+@@ -237,15 +244,26 @@ void FaultHandler(int sig, siginfo_t* si, void* uc) {
+       --t_fault_depth;
+       if constexpr (platform::kThrowThroughSignalFrames) throw;
+       t_fault_exception = std::current_exception();
+-      if (platform::RedirectToCall(uc, RethrowFaultException)) return;
++      if (platform::RedirectToCall(uc, RethrowFaultException)) return true;
+       const char m[] = "FATAL: cannot resume after a guest exception "
+                        "from a fault on this host\n";
+       (void)!write(2, m, sizeof m - 1);
+       _exit(4);
+     }
+     --t_fault_depth;
+-    if (cont) return;  // retry the faulting instruction
++    if (cont) return true;  // retry the faulting instruction
+   }
++  return false;
++}
++
++#ifndef _WIN32
++void FaultHandler(int sig, siginfo_t* si, void* uc) {
++  char buf[256];
++  uintptr_t a = reinterpret_cast<uintptr_t>(si->si_addr);
++  uintptr_t base = reinterpret_cast<uintptr_t>(g_guest_base);
++  if (OfferFault(a, uc)) return;
++  const platform::FaultContext fc = platform::ReadFaultContext(uc);
++  const bool guest32 = a - base < (1ull << 32) && g_proc && !g_proc->x64;
+   // Not guest memory: a handler installed before ours (a sanitizer, a host
+   // library's own) may own the fault; if it returns, it handled it.
+   const bool in_arena = g_proc && a - base < g_proc->mem.size() * (g_proc->x64 ? 2 : 1);
+@@ -356,6 +374,58 @@ void InstallFaultHandler() {
+   sigaction(SIGBUS, &sa, &g_prev_bus);
+ }
+ }  // namespace
++#else  // _WIN32
++// (still in the namespace opened above OfferFault)
++// Vectored exception handler: sees access violations first, before any
++// frame-based handler. Faults outside the guest arena go on to the host's
++// own handlers (EXCEPTION_CONTINUE_SEARCH).
++LONG CALLBACK FaultHandler(EXCEPTION_POINTERS* ep) {
++  const EXCEPTION_RECORD* er = ep->ExceptionRecord;
++  if (er->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || er->NumberParameters < 2)
++    return EXCEPTION_CONTINUE_SEARCH;
++  const uintptr_t a = uintptr_t(er->ExceptionInformation[1]);
++  const uintptr_t base = reinterpret_cast<uintptr_t>(g_guest_base);
++  if (OfferFault(a, ep)) return EXCEPTION_CONTINUE_EXECUTION;
++  const bool in_arena = g_proc && a - base < g_proc->mem.size() * (g_proc->x64 ? 2 : 1);
++  if (!in_arena) return EXCEPTION_CONTINUE_SEARCH;
++  const platform::FaultContext fc = platform::ReadFaultContext(ep);
++  std::fprintf(stderr, "FATAL: access violation (%s): guest memory fault at guest %08llX\n",
++               fc.write ? "write" : "read", (unsigned long long)(a - base));
++  std::fprintf(stderr, "  pc %p, caller:\n", reinterpret_cast<void*>(fc.pc));
++  if (fc.caller) {
++    void* caller = reinterpret_cast<void*>(fc.caller);
++    backtrace_symbols_fd(&caller, 1, 2);
++  }
++  if (g_proc && g_proc->x64) {
++    if (Thread* t = CurrentThread()) {
++      const Ctx& gc = t->ctx;
++      std::fprintf(stderr, "  guest thread %04X, registers as of its last call or return\n",
++                   t->tid);
++      DumpGuestState(gc);
++      std::fprintf(stderr, "  below rsp (returns of finished calls):\n");
++      for (uint64_t off = 8; off <= 0x100; off += 8) {
++        if (!g_proc->mem.IsCommitted(gc.rsp - off)) break;
++        const uint64_t v = Rd64(gc.rsp - off);
++        if (CodeAt(v))
++          std::fprintf(stderr, "    [rsp-%04llX] %016llX\n", (unsigned long long)off,
++                       (unsigned long long)v);
++      }
++    }
++  }
++  std::fflush(stderr);
++  _exit(4);
++}
++}  // namespace
++
++void InstallSignalStack() {}  // faults are handled on the faulting stack
++
++namespace {
++void InstallFaultHandler() {
++  static const bool installed = AddVectoredExceptionHandler(1, FaultHandler) != nullptr;
++  if (!installed) FatalF("AddVectoredExceptionHandler failed");
++}
++}  // namespace
++#endif  // _WIN32
+ 
+ void RegisterLiftedFunctions(const LiftedFn* fns, uint32_t count) {
+   g_lifted = fns;
+diff --git a/src/x86/process.cpp b/src/x86/process.cpp
+index 5d62979..fbdf2f9 100644
+--- a/src/x86/process.cpp
++++ b/src/x86/process.cpp
+@@ -3,7 +3,9 @@
+ // through Process's hooks.
+ 
+ #include <pthread.h>
++#ifndef _WIN32
+ #include <sys/mman.h>
++#endif
+ #include <sys/stat.h>
+ #include <unistd.h>
+ 
+@@ -85,14 +87,25 @@ std::string DataDir() {
+   const std::string& id = g_proc->game.id;
+   if (const char* x = std::getenv("XDG_DATA_HOME"); x && *x)
+     return std::string(x) + "/" + id;
++#ifdef _WIN32
++  // Portable: data lives beside the executable.
++  return platform::ExeDir() + "/data/" + id;
++#else
+   if (const char* h = std::getenv("HOME"); h && *h)
+     return std::string(h) + platform::kUserDataDir + id;
++#endif
+   return "/tmp/" + id;
+ }
+ 
+ void MakeDirs(const std::string& path) {
+   for (size_t i = 1; i <= path.size(); i++)
+-    if (i == path.size() || path[i] == '/') mkdir(path.substr(0, i).c_str(), 0755);
++    if (i == path.size() || path[i] == '/') {
++#ifdef _WIN32
++      mkdir(path.substr(0, i).c_str());
++#else
++      mkdir(path.substr(0, i).c_str(), 0755);
++#endif
++    }
+ }
+ 
+ std::string ReportPath(const char* kind) {
+@@ -348,14 +361,20 @@ void GuestMainTrampoline() {
+ }  // namespace
+ 
+ uint32_t RunMainThread(Thread* t, const std::function<uint64_t(Ctx&)>& body) {
++#ifdef _WIN32
++  void* stack = nullptr;  // the platform's fiber brings its own
++#else
+   void* stack = mmap(nullptr, kHostStack, PROT_READ | PROT_WRITE,
+                      MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+   if (stack == MAP_FAILED) FatalF("cannot allocate the main guest stack");
++#endif
+   HoldThread(t);
+   g_main_thread = t;
+   g_main_body = &body;
+   platform::RunOnStack(stack, kHostStack, GuestMainTrampoline);
++#ifndef _WIN32
+   munmap(stack, kHostStack);
++#endif
+   return g_main_exit;
+ }
+ 
+diff --git a/src/x86/watchdog.cpp b/src/x86/watchdog.cpp
+index 96d730a..511f84d 100644
+--- a/src/x86/watchdog.cpp
++++ b/src/x86/watchdog.cpp
+@@ -1,7 +1,11 @@
+ #include "x86/watchdog.h"
+ 
+ #include <errno.h>
++#ifdef _WIN32
++#include "runtime/posix_win.h"
++#else
+ #include <execinfo.h>
++#endif
+ #include <fcntl.h>
+ #include <pthread.h>
+ #include <signal.h>
+@@ -197,11 +201,15 @@ void StartWatchdog() {
+   // the signal handler.
+   void* f[2];
+   backtrace(f, 2);
++#ifdef _WIN32
++  (void)OnDumpSignal;  // no per-thread stack dumps on Windows hosts yet
++#else
+   struct sigaction sa{};
+   sa.sa_handler = OnDumpSignal;
+   sa.sa_flags = SA_RESTART;
+   sigemptyset(&sa.sa_mask);
+   sigaction(SIGUSR2, &sa, nullptr);
++#endif
+   std::thread(WatchdogMain).detach();
+ }
+ 
+diff --git a/tests/CMakeLists.txt b/tests/CMakeLists.txt
+index 6b469a2..a6c6eac 100644
+--- a/tests/CMakeLists.txt
++++ b/tests/CMakeLists.txt
+@@ -66,6 +66,7 @@ add_test(NAME platform_fault COMMAND platform_fault_test)
+ add_executable(lazy_mem_test lazy_mem_test.cpp
+                ${PROJECT_SOURCE_DIR}/src/runtime/lazy_mem.cpp
+                ${PROJECT_SOURCE_DIR}/src/runtime/guest_memory.cpp
++               ${PROJECT_SOURCE_DIR}/src/runtime/platform.cpp
+                ${PROJECT_SOURCE_DIR}/src/runtime/write_watch.cpp
+                ${PROJECT_SOURCE_DIR}/src/runtime/guest_alloc.cpp)
+ target_include_directories(lazy_mem_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
+@@ -78,6 +79,7 @@ add_test(NAME lazy_mem COMMAND lazy_mem_test)
+ add_executable(guest_alloc_test guest_alloc_test.cpp
+                ${PROJECT_SOURCE_DIR}/src/runtime/guest_alloc.cpp
+                ${PROJECT_SOURCE_DIR}/src/runtime/guest_memory.cpp
++               ${PROJECT_SOURCE_DIR}/src/runtime/platform.cpp
+                ${PROJECT_SOURCE_DIR}/src/runtime/write_watch.cpp)
+ target_include_directories(guest_alloc_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
+ target_compile_features(guest_alloc_test PRIVATE cxx_std_20)
+@@ -95,6 +97,7 @@ endif()
+ add_executable(write_watch_test write_watch_test.cpp
+                ${PROJECT_SOURCE_DIR}/src/runtime/write_watch.cpp
+                ${PROJECT_SOURCE_DIR}/src/runtime/guest_memory.cpp
++               ${PROJECT_SOURCE_DIR}/src/runtime/platform.cpp
+                ${PROJECT_SOURCE_DIR}/src/runtime/guest_alloc.cpp)
+ target_include_directories(write_watch_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
+ target_compile_features(write_watch_test PRIVATE cxx_std_20)
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,152 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: finalpantasy <finalpantasy@users.noreply.github.com>
+Date: Sat, 28 Nov 2026 00:11:36 -0500
+Subject: [PATCH 31/34] SSE: inline conversions under the lazy-SSE local
+
+CvtFloat (cvtss2sd/sd2ss/ps2pd/pd2ps), CvtIntToF (cvtsi2ss/sd, 32 and
+64 bit) and Cvtdq2ps take LZ and run as the host instruction in lazy
+mode (nearest, all masked, no DAZ/FTZ, default host MXCSR), which rounds
+and quiets NaNs as the guest would. int32 to double is exact and inline
+in every mode. CacheXmm passes LZ to the three new overloads.
+
+FFXII: sse:: helper share of the game thread 1.4% -> 0.2% at 120 fps.
+ctest 59/59; int64 and sse64 oracles 0 failed, native and soft.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/x86/sse.h             | 77 +++++++++++++++++++++++++++++++++++++--
+ tools/lifter_x86/emit.cpp |  3 +-
+ 2 files changed, 75 insertions(+), 5 deletions(-)
+
+diff --git a/src/x86/sse.h b/src/x86/sse.h
+index 9a17a07..adc3e34 100644
+--- a/src/x86/sse.h
++++ b/src/x86/sse.h
+@@ -674,10 +674,16 @@ inline void ShufPd(Xmm& d, const Xmm& s, uint8_t imm) {
+   return Comi(quiet::Lazy(c), c, dbl, ordered, a, b, va);
+ }
+ [[gnu::always_inline]] inline void Rsqrt(Xmm& d, const Xmm& s) { RECOMP_SSE_DS(RsqrtOol(td, ts)); }
++// int32 to double is exact: no rounding, no exceptions, any MXCSR.
+ [[gnu::always_inline]] inline void Cvtsi2sd(Xmm& d, int32_t v) {
++#if defined(__x86_64__)
++  const double r = double(v);
++  std::memcpy(d.b, &r, 8);
++#else
+   Xmm td = d;
+   Cvtsi2sdOol(td, v);
+   d = td;
++#endif
+ }
+ [[gnu::always_inline]] inline uint32_t CvtToI32(Ctx& c, bool dbl, const Xmm& s, bool truncate,
+                                                 uint64_t va) {
+@@ -689,16 +695,67 @@ inline void ShufPd(Xmm& d, const Xmm& s, uint8_t imm) {
+   const Xmm ts = s;
+   return CvtToI64Ool(c, dbl, ts, truncate, va);
+ }
++// Conversions under lazy flags (all exceptions masked, nearest, no DAZ/FTZ,
++// host MXCSR at the default) run as the host instruction: it rounds and
++// quiets NaNs exactly as the guest's would, and the sticky flags are not
++// kept in that mode.
++[[gnu::always_inline]] inline void CvtFloat(bool lz, Ctx& c, bool to_dbl, int lanes, Xmm& d,
++                                            const Xmm& s, uint64_t va) {
++#if defined(__x86_64__)
++  if (lz) {
++    quiet::V4 dv, sv;
++    std::memcpy(&dv, d.b, 16);
++    std::memcpy(&sv, s.b, 16);
++    if (to_dbl) {
++      if (lanes == 1)
++        asm("cvtss2sd %1, %0" : "+x"(dv) : "x"(sv));
++      else
++        asm("cvtps2pd %1, %0" : "=x"(dv) : "x"(sv));
++    } else {
++      if (lanes == 1)
++        asm("cvtsd2ss %1, %0" : "+x"(dv) : "x"(sv));
++      else
++        asm("cvtpd2ps %1, %0" : "=x"(dv) : "x"(sv));  // zeroes the top
++    }
++    std::memcpy(d.b, &dv, 16);
++    return;
++  }
++#endif
++  RECOMP_SSE_DS(CvtFloatOol(c, to_dbl, lanes, td, ts, va));
++}
+ [[gnu::always_inline]] inline void CvtFloat(Ctx& c, bool to_dbl, int lanes, Xmm& d, const Xmm& s,
+                                             uint64_t va) {
+-  RECOMP_SSE_DS(CvtFloatOol(c, to_dbl, lanes, td, ts, va));
++  CvtFloat(quiet::Lazy(c), c, to_dbl, lanes, d, s, va);
+ }
+-[[gnu::always_inline]] inline void CvtIntToF(Ctx& c, bool dbl, bool src64, uint64_t v, Xmm& d,
+-                                             uint64_t va) {
++[[gnu::always_inline]] inline void CvtIntToF(bool lz, Ctx& c, bool dbl, bool src64, uint64_t v,
++                                             Xmm& d, uint64_t va) {
++#if defined(__x86_64__)
++  if (lz) {
++    quiet::V4 dv;
++    std::memcpy(&dv, d.b, 16);
++    if (dbl) {
++      if (src64)
++        asm("cvtsi2sdq %1, %0" : "+x"(dv) : "r"(v));
++      else
++        asm("cvtsi2sdl %1, %0" : "+x"(dv) : "r"(uint32_t(v)));
++    } else {
++      if (src64)
++        asm("cvtsi2ssq %1, %0" : "+x"(dv) : "r"(v));
++      else
++        asm("cvtsi2ssl %1, %0" : "+x"(dv) : "r"(uint32_t(v)));
++    }
++    std::memcpy(d.b, &dv, 16);
++    return;
++  }
++#endif
+   Xmm td = d;
+   CvtIntToFOol(c, dbl, src64, v, td, va);
+   d = td;
+ }
++[[gnu::always_inline]] inline void CvtIntToF(Ctx& c, bool dbl, bool src64, uint64_t v, Xmm& d,
++                                             uint64_t va) {
++  CvtIntToF(quiet::Lazy(c), c, dbl, src64, v, d, va);
++}
+ [[gnu::always_inline]] inline void CvtToDq(Ctx& c, bool dbl, bool truncate, Xmm& d, const Xmm& s,
+                                            uint64_t va) {
+   RECOMP_SSE_DS(CvtToDqOol(c, dbl, truncate, td, ts, va));
+@@ -726,9 +783,21 @@ inline void ShufPd(Xmm& d, const Xmm& s, uint8_t imm) {
+   RECOMP_SSE_DS(DpOol(c, dbl, td, ts, imm, va));
+ }
+ [[gnu::always_inline]] inline void Rcp(Xmm& d, const Xmm& s) { RECOMP_SSE_DS(RcpOol(td, ts)); }
+-[[gnu::always_inline]] inline void Cvtdq2ps(Ctx& c, Xmm& d, const Xmm& s, uint64_t va) {
++[[gnu::always_inline]] inline void Cvtdq2ps(bool lz, Ctx& c, Xmm& d, const Xmm& s, uint64_t va) {
++#if defined(__x86_64__)
++  if (lz) {
++    quiet::V4 dv, sv;
++    std::memcpy(&sv, s.b, 16);
++    asm("cvtdq2ps %1, %0" : "=x"(dv) : "x"(sv));
++    std::memcpy(d.b, &dv, 16);
++    return;
++  }
++#endif
+   RECOMP_SSE_DS(Cvtdq2psOol(c, td, ts, va));
+ }
++[[gnu::always_inline]] inline void Cvtdq2ps(Ctx& c, Xmm& d, const Xmm& s, uint64_t va) {
++  Cvtdq2ps(quiet::Lazy(c), c, d, s, va);
++}
+ #undef RECOMP_SSE_DS
+ 
+ }  // namespace recomp::sse
+diff --git a/tools/lifter_x86/emit.cpp b/tools/lifter_x86/emit.cpp
+index 24000a7..99827a4 100644
+--- a/tools/lifter_x86/emit.cpp
++++ b/tools/lifter_x86/emit.cpp
+@@ -4034,7 +4034,8 @@ void Emitter::CacheXmm(std::string* out, size_t start) {
+   // both. MXCSR changes only in LDMXCSR and in calls, which all end in
+   // LIFT_RELOAD (the same rule the cached GPRs follow), so the function
+   // keeps the test in LZ and redoes it there.
+-  static const char* const kLazyOps[] = {"Arith", "Sqrt", "MinMax", "Comi"};
++  static const char* const kLazyOps[] = {"Arith", "Sqrt", "MinMax", "Comi",
++                                         "CvtFloat", "CvtIntToF", "Cvtdq2ps"};
+   bool lazy = false;
+   for (const char* op : kLazyOps) {
+     const std::string a = Fmt("::recomp::sse::%s(c, ", op);
+-- 
+2.51.0.windows.1
+

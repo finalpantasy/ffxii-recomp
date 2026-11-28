@@ -1,0 +1,100 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: finalpantasy <finalpantasy@users.noreply.github.com>
+Date: Sun, 22 Nov 2026 02:39:39 -0500
+Subject: [PATCH 07/34] win32 COM: lock-free index in front of the object map
+
+As<T> cache misses (about 12% in FFXII combat, mostly from more live
+pointers than the per-thread cache holds) now check a 65,536-slot
+lock-free index before taking the recursive mutex. Slots are written
+under the mutex on Publish and the final Release. RECOMP_COM_STATS also
+counts publishes and unknown pointers. LookupRaw fell from 5.3% to 2.2%
+of the FFXII render thread.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ platforms/win32/src/win32/com.cpp | 42 ++++++++++++++++++++++++++++---
+ 1 file changed, 39 insertions(+), 3 deletions(-)
+
+diff --git a/platforms/win32/src/win32/com.cpp b/platforms/win32/src/win32/com.cpp
+index 15d96b7..d4fd989 100644
+--- a/platforms/win32/src/win32/com.cpp
++++ b/platforms/win32/src/win32/com.cpp
+@@ -20,6 +20,19 @@ std::recursive_mutex g_mu;
+ std::map<std::string, gaddr> g_vtables;
+ std::map<gaddr, std::shared_ptr<Object>> g_objects;  // by guest pointer
+ std::vector<std::pair<guest::GUID, CreateFn>> g_classes;
++std::atomic<uint64_t> g_publishes{0}, g_unknown{0};  // RECOMP_COM_STATS
++
++// Lock-free index in front of g_objects, keyed by a hash of the guest
++// pointer; one object per slot, and a pointer whose slot is taken stays
++// map-only. Written under g_mu: the object before the key when filling,
++// the key first when clearing.
++struct FastSlot {
++  std::atomic<gaddr> guest{0};
++  std::atomic<Object*> obj{nullptr};
++};
++constexpr size_t kFastSlots = size_t(1) << 16;
++FastSlot g_fast[kFastSlots];
++FastSlot& FastOf(gaddr guest) { return g_fast[(guest >> 4) & (kFastSlots - 1)]; }
+ 
+ }  // namespace
+ 
+@@ -55,7 +68,14 @@ gaddr Publish(std::shared_ptr<Object> obj, gaddr vtable) {
+   }
+   obj->guest = p;
+   std::lock_guard<std::recursive_mutex> l(g_mu);
++  Object* raw = obj.get();
+   g_objects[p] = std::move(obj);
++  FastSlot& slot = FastOf(p);
++  if (!slot.guest.load(std::memory_order_relaxed)) {
++    slot.obj.store(raw, std::memory_order_relaxed);
++    slot.guest.store(p, std::memory_order_release);
++  }
++  g_publishes.fetch_add(1, std::memory_order_relaxed);
+   GenerationOf(p).fetch_add(1, std::memory_order_release);
+   return p;
+ }
+@@ -78,14 +98,25 @@ void CountLookup(bool hit) {
+   calls++;
+   hits += hit;
+   if ((calls & ((1u << 20) - 1)) == 0)
+-    std::fprintf(stderr, "[com] cache %llu lookups, %.1f%% hits\n",
+-                 static_cast<unsigned long long>(calls), 100.0 * double(hits) / double(calls));
++    std::fprintf(stderr, "[com] cache %llu lookups, %.1f%% hits; %llu published, %llu unknown\n",
++                 static_cast<unsigned long long>(calls), 100.0 * double(hits) / double(calls),
++                 static_cast<unsigned long long>(g_publishes.load()),
++                 static_cast<unsigned long long>(g_unknown.load()));
+ }
+ 
+ Object* LookupRaw(gaddr guest) {
++  FastSlot& slot = FastOf(guest);
++  if (guest && slot.guest.load(std::memory_order_acquire) == guest) {
++    Object* o = slot.obj.load(std::memory_order_acquire);
++    if (slot.guest.load(std::memory_order_acquire) == guest) return o;
++  }
+   std::lock_guard<std::recursive_mutex> l(g_mu);
+   auto it = g_objects.find(guest);
+-  return it == g_objects.end() ? nullptr : it->second.get();
++  if (it == g_objects.end()) {
++    if (g_cache_stats) g_unknown.fetch_add(1, std::memory_order_relaxed);
++    return nullptr;
++  }
++  return it->second.get();
+ }
+ 
+ uint32_t AddRef(gaddr guest) {
+@@ -108,6 +139,11 @@ uint32_t Release(gaddr guest) {
+     if (!left) {
+       dead = it->second;
+       g_objects.erase(it);
++      FastSlot& slot = FastOf(guest);
++      if (slot.guest.load(std::memory_order_relaxed) == guest) {
++        slot.guest.store(0, std::memory_order_release);
++        slot.obj.store(nullptr, std::memory_order_relaxed);
++      }
+       GenerationOf(guest).fetch_add(1, std::memory_order_release);
+       // Poison the guest block so a use-after-release is caught.
+       Wr64(guest, 0);
+-- 
+2.51.0.windows.1
+

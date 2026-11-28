@@ -1,0 +1,101 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: finalpantasy <finalpantasy@users.noreply.github.com>
+Date: Sun, 22 Nov 2026 12:57:04 -0500
+Subject: [PATCH 19/34] Dispatch census: <ID>_DISPATCH_STATS counts indirect
+ calls per target
+
+Logs the 40 busiest targets every 30 s and writes dispatch-targets.tsv,
+the functions a ReplaceDispatch hook can catch. Off by default; the cost
+when off is one static-guard check per dispatch.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/x86/dispatch.cpp | 57 ++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 57 insertions(+)
+
+diff --git a/src/x86/dispatch.cpp b/src/x86/dispatch.cpp
+index 0a2deea..0cdeb46 100644
+--- a/src/x86/dispatch.cpp
++++ b/src/x86/dispatch.cpp
+@@ -24,7 +24,10 @@
+ #include <cstdlib>
+ #include <exception>
+ #include <vector>
++#include <algorithm>
++#include <atomic>
+ 
++#include "runtime/env.h"
+ #include "runtime/lazy_mem.h"
+ #include "runtime/log.h"
+ #include "runtime/platform.h"
+@@ -450,6 +453,58 @@ bool IsLifted(gaddr va) {
+   return r && r->table[va - r->lo];
+ }
+ 
++namespace {
++// <ID>_DISPATCH_STATS=1: counts indirect calls into the EXE per target and,
++// every 30 s, logs the 40 most called with their calls per second over the
++// last 30 s, and writes dispatch-targets.tsv (target, total calls, all
++// targets so far) to the current directory. These are the functions a
++// ReplaceDispatch hook catches.
++std::atomic<uint32_t>* g_dispatch_calls = nullptr;
++void DispatchStatsReport() {
++  using clock = std::chrono::steady_clock;
++  static std::atomic<int64_t> next{0};
++  const int64_t now = clock::now().time_since_epoch().count();
++  const int64_t period =
++      std::chrono::duration_cast<clock::duration>(std::chrono::seconds(30)).count();
++  int64_t due = next.load(std::memory_order_relaxed);
++  if (due == 0) {
++    next.compare_exchange_strong(due, now + period);
++    return;
++  }
++  if (now < due || !next.compare_exchange_strong(due, now + period)) return;
++  static std::vector<uint32_t> last(g_exe.size);
++  std::vector<std::pair<uint32_t, uint64_t>> rows;
++  std::FILE* f = std::fopen("dispatch-targets.tsv", "wb");
++  if (f) std::fprintf(f, "target\tcalls\n");
++  for (uint64_t i = 0; i < g_exe.size; i++) {
++    const uint32_t v = g_dispatch_calls[i].load(std::memory_order_relaxed);
++    if (!v) continue;
++    if (f) std::fprintf(f, "%08llX\t%u\n", (unsigned long long)(g_exe.lo + i), v);
++    if (v != last[i]) rows.push_back({v - last[i], g_exe.lo + i});
++    last[i] = v;
++  }
++  if (f) std::fclose(f);
++  std::sort(rows.rbegin(), rows.rend());
++  std::fprintf(stderr, "[dispatch] calls per second over the last 30 s (%zu targets):\n",
++               rows.size());
++  for (size_t k = 0; k < rows.size() && k < 40; k++)
++    std::fprintf(stderr, "[dispatch]   %10.1f %08llX\n", rows[k].first / 30.0,
++                 (unsigned long long)rows[k].second);
++}
++[[gnu::noinline]] void DispatchStats(uint64_t target) {
++  g_dispatch_calls[target - g_exe.lo].fetch_add(1, std::memory_order_relaxed);
++  DispatchStatsReport();
++}
++bool DispatchStatsOn() {
++  static const bool on = [] {
++    if (!Env("DISPATCH_STATS")) return false;
++    g_dispatch_calls = new std::atomic<uint32_t>[g_exe.size]();
++    return true;
++  }();
++  return on;
++}
++}  // namespace
++
+ GuestFn ReplaceDispatch(gaddr va, GuestFn fn) {
+   CodeRange* r = va - g_exe.lo < g_exe.size ? &g_exe : nullptr;
+   for (CodeRange& d : g_dlls)
+@@ -475,6 +530,8 @@ void Dispatch(Ctx& c, uint64_t target, uint64_t va) {
+              (unsigned long long)va);
+   }
+   if (GuestFn fn = r->table[target - r->lo]) {
++    if (r == &g_exe && DispatchStatsOn()) [[unlikely]]
++      DispatchStats(target);
+     fn(c);
+     return;
+   }
+-- 
+2.51.0.windows.1
+
