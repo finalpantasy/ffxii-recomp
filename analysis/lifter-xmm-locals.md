@@ -53,6 +53,10 @@ Pair 2 ran at the same machine load and is the clean comparison: the game thread
 
 A/B at 120 fps (`win-cvtNew.log`, `win-cvtOld.log` against the LZ exe): the machine was busy with other work (69% and 77% mean load), so the numbers are rough. The game thread was 72% busy at 118 fps mean against 76% at 107 fps, about 14% less work per frame, and its `sse::` helper samples fell from 1.4% to 0.2%. The render thread was 70% against 63%, mostly driver time. The remaining out-of-line conversions are `CvtToI32` and `CvtToI64` (11,409 and 2,186 sites).
 
+## Oracle with lazy flags on (2026-11-28)
+
+`lift_sse64_test` never turned `g_lazy_flags` on, so until now the oracle compared only the exact SSE path, not the lazy paths `ffxii_recomp` runs by default (inline `Arith`, `Sqrt`, `MinMax`, `Comi` and the conversions under `LZ`). SwARc's x64 test driver now takes `LIFT_TEST_LAZY=1`, which turns lazy flags on for every trial whose MXCSR has the default control (about a quarter to a third of trials) and leaves the six sticky exception bits out of the MXCSR compare, because lazy mode does not keep them by design. The first run without that mask reported `ucomiss` forms failing only on the sticky invalid bit. With it: `LIFT_TEST_LAZY=1 lift_sse64_test 300` passes 6,589 forms, 0 failed. Run it next to the plain and `RECOMP_SOFT_SSE=1` runs for every SSE change.
+
 ## Possible follow-ups
 
 - `CvtToI32` and `CvtToI64` have no inline fast path yet.
