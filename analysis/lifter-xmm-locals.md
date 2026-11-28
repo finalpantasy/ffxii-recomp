@@ -57,6 +57,12 @@ A/B at 120 fps (`win-cvtNew.log`, `win-cvtOld.log` against the LZ exe): the mach
 
 `lift_sse64_test` never turned `g_lazy_flags` on, so until now the oracle compared only the exact SSE path, not the lazy paths `ffxii_recomp` runs by default (inline `Arith`, `Sqrt`, `MinMax`, `Comi` and the conversions under `LZ`). SwARc's x64 test driver now takes `LIFT_TEST_LAZY=1`, which turns lazy flags on for every trial whose MXCSR has the default control (about a quarter to a third of trials) and leaves the six sticky exception bits out of the MXCSR compare, because lazy mode does not keep them by design. The first run without that mask reported `ucomiss` forms failing only on the sticky invalid bit. With it: `LIFT_TEST_LAZY=1 lift_sse64_test 300` passes 6,589 forms, 0 failed. Run it next to the plain and `RECOMP_SOFT_SSE=1` runs for every SSE change.
 
+## Compare flags from the host (2026-11-28)
+
+In lazy mode `Comi` (comiss, ucomiss, comisd, ucomisd) now runs `ucomiss` or `ucomisd` on the host and writes ZF, PF and CF straight from the host flags through asm flag outputs (`=@ccz`, `=@ccp`, `=@ccc`), instead of returning a 0-3 code that the emitted code turned back into three flags with a second compare and NaN tests. COMIS and UCOMIS differ only in raising invalid on a quiet NaN, which lazy mode masks and does not record, so one host instruction serves both. Out of lazy mode the exact `ComiOol` path still runs. In a scratch test the common `if (!(cf||zf))` consumer went from about 14 host instructions to 4. The relift rewrote all 63,319 sites (38,203 comiss, 21,280 ucomiss, 3,741 comisd, 95 ucomisd).
+
+SwARc ba794da. Checks (`build/run/comi-checks.log`): ctest 59 of 59; `lift_int64_test` 35,949 forms, 0 failed; `lift_sse64_test 300` 6,589 forms, 0 failed native, with `LIFT_TEST_LAZY=1` and with `RECOMP_SOFT_SSE=1`. The Windows exe with it is saved as `A:/AI/ffxii-win/ffxii_recomp-comi.exe` (symbols in `nm-comi.txt`) once the full rebuild ends; it has not been measured in game yet. Its A/B baseline is `ffxii_recomp-heap.exe`.
+
 ## Possible follow-ups
 
 - `CvtToI32` and `CvtToI64` have no inline fast path yet.
