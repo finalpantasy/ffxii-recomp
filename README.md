@@ -2,6 +2,12 @@
 
 A static recompilation of **Final Fantasy XII: The Zodiac Age** (Steam, Windows, version 1.0.4.0) into native C++, with an open modding platform built into the runtime. The game's x86-64 code is translated ahead of time by the [SwARc](https://github.com/JTM-rootstorm/SwARc) lifter. It is not an emulator and has no CPU JIT.
 
+![The recompiled game in the field: the party at a save crystal on a cliff](https://github.com/finalpantasy/ffxii-recomp/releases/download/screenshots/ffxii-recomp-field.png)
+
+![Four more areas loaded from Steam saves: desert, a temple, rain on the plains, and a sewer](https://github.com/finalpantasy/ffxii-recomp/releases/download/screenshots/ffxii-recomp-areas.png)
+
+*Captured from the recompiled Windows build at 800x600 test settings, loading the owner's Steam saves.*
+
 You need your own copy of the game. This repository contains no game executable, assets, keys or generated game code.
 
 ## Status
