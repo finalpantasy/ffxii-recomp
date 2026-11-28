@@ -47,6 +47,12 @@ A/B at `FFXII_FPS=120`, `fight7-x.txt` from `data-iw-nv`, thread sampler over 15
 
 Pair 2 ran at the same machine load and is the clean comparison: the game thread (top items f_001E2AF0, f_001E25F0) fell from 65% to 53% busy; the render thread, about two thirds driver and system DLL time, barely moved. On the game thread `sse::` helpers fell from 2.2% to 1.0% of samples and `CheckAligned` (0.8%) is gone. The fps means include load screens and dips, so they do not separate the builds. Pair 1's baseline ran under heavier load and fell well below the cap. The baseline exe once crashed at boot with exit 139 just after loading `nvapi64.dll` (`win-lzOld2-bootcrash.log`) and booted normally on the rerun; that exe predates this change.
 
+## Inline conversions (2026-11-28)
+
+`CvtFloat` (cvtss2sd, cvtsd2ss, cvtps2pd, cvtpd2ps), `CvtIntToF` (cvtsi2ss/sd from 32 or 64 bits) and `Cvtdq2ps` now take `LZ` and run as the host instruction in lazy mode, which already guarantees round to nearest, every exception masked, no DAZ or FTZ, and the default host MXCSR. Out of lazy mode they still call the `...Ool` helpers. int32 to double (`Cvtsi2sd`) is exact, so it is inline in every mode. Sites: 12,452 `CvtFloat`, 3,479 `CvtIntToF`, 6,958 `Cvtdq2ps`. Checks: ctest 59 of 59, `lift_int64_test` and `lift_sse64_test 300` (native and soft) 0 failed.
+
+A/B at 120 fps (`win-cvtNew.log`, `win-cvtOld.log` against the LZ exe): the machine was busy with other work (69% and 77% mean load), so the numbers are rough. The game thread was 72% busy at 118 fps mean against 76% at 107 fps, about 14% less work per frame, and its `sse::` helper samples fell from 1.4% to 0.2%. The render thread was 70% against 63%, mostly driver time. The remaining out-of-line conversions are `CvtToI32` and `CvtToI64` (11,409 and 2,186 sites).
+
 ## Possible follow-ups
 
-- `CvtFloat` and `CvtIntToF` have no inline fast path yet.
+- `CvtToI32` and `CvtToI64` have no inline fast path yet.
